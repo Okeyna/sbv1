@@ -1,129 +1,128 @@
 from datetime import datetime
-from app.database import db
+from sqlalchemy import Column, Integer, String, Float, Text, DateTime, ForeignKey, JSON, UniqueConstraint
+from sqlalchemy.orm import relationship
+from app.database import Base
 
-class User(db.Model):
+class User(Base):
     __tablename__ = 'users'
     
-    id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(120), unique=True, nullable=False, index=True)
-    hashed_password = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(50), default='user')
-    subscription_type = db.Column(db.String(50), default='free')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
+    email = Column(String(120), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    role = Column(String(50), default='user')
+    subscription_type = Column(String(50), default='free')
+    created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
-    files = db.relationship('UploadedFile', backref='owner', cascade='all, delete-orphan')
-    audio_lessons = db.relationship('AudioLesson', backref='owner', cascade='all, delete-orphan')
-    quizzes = db.relationship('Quiz', backref='owner', cascade='all, delete-orphan')
-    quiz_attempts = db.relationship('QuizAttempt', backref='owner', cascade='all, delete-orphan')
-    chat_messages = db.relationship('AIChat', backref='owner', cascade='all, delete-orphan')
-    progress = db.relationship('StudyProgress', backref='owner', cascade='all, delete-orphan')
-    subscriptions = db.relationship('Subscription', backref='owner', cascade='all, delete-orphan')
+    files = relationship('UploadedFile', back_populates='owner', cascade='all, delete-orphan')
+    audio_lessons = relationship('AudioLesson', back_populates='owner', cascade='all, delete-orphan')
+    quizzes = relationship('Quiz', back_populates='owner', cascade='all, delete-orphan')
+    quiz_attempts = relationship('QuizAttempt', back_populates='owner', cascade='all, delete-orphan')
+    chat_messages = relationship('AIChat', back_populates='owner', cascade='all, delete-orphan')
+    progress = relationship('StudyProgress', back_populates='owner', cascade='all, delete-orphan')
 
-
-class UploadedFile(db.Model):
+class UploadedFile(Base):
     __tablename__ = 'uploaded_files'
     
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    filename = db.Column(db.String(255), nullable=False)
-    file_path = db.Column(db.String(500), nullable=False)
-    text_content = db.Column(db.Text)
-    summary = db.Column(db.Text)
-    status = db.Column(db.String(50), default='processing')  # processing, ready, error
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    filename = Column(String(255), nullable=False)
+    file_path = Column(String(500), nullable=False)
+    text_content = Column(Text)
+    summary = Column(Text)
+    status = Column(String(50), default='processing')
+    created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
-    audio_lessons = db.relationship('AudioLesson', backref='file', cascade='all, delete-orphan')
-    quizzes = db.relationship('Quiz', backref='file', cascade='all, delete-orphan')
-    chat_messages = db.relationship('AIChat', backref='file', cascade='all, delete-orphan')
-    progress = db.relationship('StudyProgress', backref='file', uselist=False, cascade='all, delete-orphan')
+    owner = relationship('User', back_populates='files')
+    audio_lessons = relationship('AudioLesson', back_populates='file', cascade='all, delete-orphan')
+    quizzes = relationship('Quiz', back_populates='file', cascade='all, delete-orphan')
+    chat_messages = relationship('AIChat', back_populates='file', cascade='all, delete-orphan')
+    progress = relationship('StudyProgress', back_populates='file', uselist=False, cascade='all, delete-orphan')
 
-
-class AudioLesson(db.Model):
+class AudioLesson(Base):
     __tablename__ = 'audio_lessons'
     
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    file_id = db.Column(db.Integer, db.ForeignKey('uploaded_files.id'), nullable=False)
-    audio_path = db.Column(db.String(500), nullable=False)
-    audio_url = db.Column(db.String(500))
-    duration = db.Column(db.Float, default=0.0)
-    voice_type = db.Column(db.String(50), default='default')
-    position_seconds = db.Column(db.Float, default=0.0)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    file_id = Column(Integer, ForeignKey('uploaded_files.id'), nullable=False)
+    audio_path = Column(String(500), nullable=False)
+    audio_url = Column(String(500))
+    duration = Column(Float, default=0.0)
+    voice_type = Column(String(50), default='default')
+    position_seconds = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    owner = relationship('User', back_populates='audio_lessons')
+    file = relationship('UploadedFile', back_populates='audio_lessons')
 
-
-class Quiz(db.Model):
+class Quiz(Base):
     __tablename__ = 'quizzes'
     
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    file_id = db.Column(db.Integer, db.ForeignKey('uploaded_files.id'), nullable=False)
-    title = db.Column(db.String(255), nullable=False)
-    difficulty = db.Column(db.String(50), default='medium')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    file_id = Column(Integer, ForeignKey('uploaded_files.id'), nullable=False)
+    title = Column(String(255), nullable=False)
+    difficulty = Column(String(50), default='medium')
+    created_at = Column(DateTime, default=datetime.utcnow)
     
-    # Relationships
-    questions = db.relationship('QuizQuestion', backref='quiz', cascade='all, delete-orphan')
-    attempts = db.relationship('QuizAttempt', backref='quiz', cascade='all, delete-orphan')
+    owner = relationship('User', back_populates='quizzes')
+    file = relationship('UploadedFile', back_populates='quizzes')
+    questions = relationship('QuizQuestion', back_populates='quiz', cascade='all, delete-orphan')
+    attempts = relationship('QuizAttempt', back_populates='quiz', cascade='all, delete-orphan')
 
-
-class QuizQuestion(db.Model):
+class QuizQuestion(Base):
     __tablename__ = 'quiz_questions'
     
-    id = db.Column(db.Integer, primary_key=True)
-    quiz_id = db.Column(db.Integer, db.ForeignKey('quizzes.id'), nullable=False)
-    question = db.Column(db.Text, nullable=False)
-    options = db.Column(db.JSON, nullable=False)  # List of 4 options
-    correct_answer = db.Column(db.Integer, nullable=False)  # Index of correct option (0-3)
-    explanation = db.Column(db.Text)
+    id = Column(Integer, primary_key=True)
+    quiz_id = Column(Integer, ForeignKey('quizzes.id'), nullable=False)
+    question = Column(Text, nullable=False)
+    options = Column(JSON, nullable=False)
+    correct_answer = Column(Integer, nullable=False)
+    explanation = Column(Text)
+    
+    quiz = relationship('Quiz', back_populates='questions')
 
-
-class QuizAttempt(db.Model):
+class QuizAttempt(Base):
     __tablename__ = 'quiz_attempts'
     
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    quiz_id = db.Column(db.Integer, db.ForeignKey('quizzes.id'), nullable=False)
-    score = db.Column(db.Integer, default=0)
-    correct = db.Column(db.Integer, default=0)
-    total = db.Column(db.Integer, default=0)
-    answers = db.Column(db.JSON)  # Store user's answers
-    completed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    quiz_id = Column(Integer, ForeignKey('quizzes.id'), nullable=False)
+    score = Column(Integer, default=0)
+    correct = Column(Integer, default=0)
+    total = Column(Integer, default=0)
+    answers = Column(JSON)
+    completed_at = Column(DateTime, default=datetime.utcnow)
+    
+    owner = relationship('User', back_populates='quiz_attempts')
+    quiz = relationship('Quiz', back_populates='attempts')
 
-
-class AIChat(db.Model):
+class AIChat(Base):
     __tablename__ = 'ai_chats'
     
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    file_id = db.Column(db.Integer, db.ForeignKey('uploaded_files.id'))
-    message = db.Column(db.Text, nullable=False)
-    response = db.Column(db.Text, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    file_id = Column(Integer, ForeignKey('uploaded_files.id'))
+    message = Column(Text, nullable=False)
+    response = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    owner = relationship('User', back_populates='chat_messages')
+    file = relationship('UploadedFile', back_populates='chat_messages')
 
-
-class StudyProgress(db.Model):
+class StudyProgress(Base):
     __tablename__ = 'study_progress'
     
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    file_id = db.Column(db.Integer, db.ForeignKey('uploaded_files.id'), nullable=False)
-    completion = db.Column(db.Float, default=0.0)  # Percentage 0-100
-    listening_time = db.Column(db.Float, default=0.0)  # In seconds
-    quiz_avg = db.Column(db.Float, default=0.0)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    file_id = Column(Integer, ForeignKey('uploaded_files.id'), nullable=False)
+    completion = Column(Float, default=0.0)
+    listening_time = Column(Float, default=0.0)
+    quiz_avg = Column(Float, default=0.0)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    __table_args__ = (db.UniqueConstraint('user_id', 'file_id', name='unique_user_file_progress'),)
-
-
-class Subscription(db.Model):
-    __tablename__ = 'subscriptions'
+    __table_args__ = (UniqueConstraint('user_id', 'file_id', name='unique_user_file_progress'),)
     
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    provider = db.Column(db.String(100))
-    status = db.Column(db.String(50), default='active')
-    renewal_date = db.Column(db.DateTime)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    owner = relationship('User', back_populates='progress')
+    file = relationship('UploadedFile', back_populates='progress')

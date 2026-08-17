@@ -1,179 +1,172 @@
 from datetime import datetime, timedelta
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity, get_jwt
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
+from pydantic import BaseModel, EmailStr
+from typing import Optional
 import bcrypt
-from app.database import db
+from sqlalchemy.orm import Session
+
+from app.database import get_db
 from app.models import User
-from app.schemas import register_schema, login_schema, update_user_schema, user_schema
-from app.deps import get_current_user
+from app.config import Config
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
 
-auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
+router = APIRouter()
 
-@auth_bp.route('/register', methods=['POST'])
-def register():
+# OAuth2 scheme
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+# Pydantic schemas
+class UserRegister(BaseModel):
+    email: EmailStr
+    password: str
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+class UserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    password: Optional[str] = None
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    role: str
+    subscription_type: str
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    user: UserResponse
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, Config.JWT_SECRET_KEY, algorithm=Config.JWT_ALGORITHM)
+
+def create_refresh_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(days=7)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, Config.JWT_SECRET_KEY, algorithm=Config.JWT_ALGORITHM)
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, Config.JWT_SECRET_KEY, algorithms=[Config.JWT_ALGORITHM])
+        user_id: int = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+def register(user_data: UserRegister, db: Session = Depends(get_db)):
     """Register a new user"""
-    data = request.get_json()
-    
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
-    
-    # Validate input
-    errors = register_schema.validate(data)
-    if errors:
-        return jsonify({'error': errors}), 400
-    
-    email = data.get('email').lower().strip()
-    password = data.get('password')
-    
     # Check if user exists
-    existing_user = User.query.filter_by(email=email).first()
+    existing_user = db.query(User).filter(User.email == user_data.email.lower().strip()).first()
     if existing_user:
-        return jsonify({'error': 'Email already registered'}), 409
+        raise HTTPException(status_code=409, detail="Email already registered")
     
     # Hash password
-    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    hashed_password = bcrypt.hashpw(user_data.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
     
     # Create user
     user = User(
-        email=email,
+        email=user_data.email.lower().strip(),
         hashed_password=hashed_password,
         role='user',
         subscription_type='free'
     )
     
-    db.session.add(user)
-    db.session.commit()
+    db.add(user)
+    db.commit()
+    db.refresh(user)
     
     # Generate tokens
-    access_token = create_access_token(
-        identity=user.id,
-        additional_claims={'role': user.role}
+    access_token = create_access_token(data={"sub": user.id, "role": user.role})
+    refresh_token = create_refresh_token(data={"sub": user.id})
+    
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        user=UserResponse.model_validate(user)
     )
-    refresh_token = create_refresh_token(identity=user.id)
-    
-    return jsonify({
-        'message': 'User registered successfully',
-        'user': user_schema.dump(user),
-        'access_token': access_token,
-        'refresh_token': refresh_token
-    }), 201
 
-
-@auth_bp.route('/login', methods=['POST'])
-def login():
+@router.post("/login", response_model=TokenResponse)
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """Login user"""
-    data = request.get_json()
-    
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
-    
-    # Validate input
-    errors = login_schema.validate(data)
-    if errors:
-        return jsonify({'error': errors}), 400
-    
-    email = data.get('email').lower().strip()
-    password = data.get('password')
+    email = form_data.username.lower().strip()
+    password = form_data.password
     
     # Find user
-    user = User.query.filter_by(email=email).first()
+    user = db.query(User).filter(User.email == email).first()
     if not user:
-        return jsonify({'error': 'Invalid email or password'}), 401
+        raise HTTPException(status_code=401, detail="Invalid email or password")
     
     # Verify password
     if not bcrypt.checkpw(password.encode('utf-8'), user.hashed_password.encode('utf-8')):
-        return jsonify({'error': 'Invalid email or password'}), 401
+        raise HTTPException(status_code=401, detail="Invalid email or password")
     
     # Generate tokens
-    access_token = create_access_token(
-        identity=user.id,
-        additional_claims={'role': user.role}
-    )
-    refresh_token = create_refresh_token(identity=user.id)
+    access_token = create_access_token(data={"sub": user.id, "role": user.role})
+    refresh_token = create_refresh_token(data={"sub": user.id})
     
-    return jsonify({
-        'message': 'Login successful',
-        'user': user_schema.dump(user),
-        'access_token': access_token,
-        'refresh_token': refresh_token
-    })
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        user=UserResponse.model_validate(user)
+    )
 
-
-@auth_bp.route('/logout', methods=['POST'])
-@jwt_required()
-def logout():
+@router.post("/logout")
+def logout(current_user: User = Depends(get_current_user)):
     """Logout user (client should remove token)"""
-    # In a real app, you might add the token to a blocklist
-    return jsonify({'message': 'Logged out successfully'})
+    return {"message": "Logged out successfully"}
 
-
-@auth_bp.route('/refresh', methods=['POST'])
-@jwt_required(refresh=True)
-def refresh():
+@router.post("/refresh", response_model=dict)
+def refresh(current_user: User = Depends(get_current_user)):
     """Refresh access token"""
-    current_user_id = get_jwt_identity()
-    user = User.query.get(current_user_id)
-    
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
-    
-    access_token = create_access_token(
-        identity=user.id,
-        additional_claims={'role': user.role}
-    )
-    
-    return jsonify({'access_token': access_token})
+    access_token = create_access_token(data={"sub": current_user.id, "role": current_user.role})
+    return {"access_token": access_token}
 
-
-@auth_bp.route('/me', methods=['GET'])
-@jwt_required()
-def get_me():
+@router.get("/me", response_model=UserResponse)
+def get_me(current_user: User = Depends(get_current_user)):
     """Get current user info"""
-    current_user_id = get_jwt_identity()
-    user = User.query.get(current_user_id)
-    
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
-    
-    return jsonify({'user': user_schema.dump(user)})
+    return current_user
 
-
-@auth_bp.route('/me', methods=['PATCH'])
-@jwt_required()
-def update_me():
+@router.patch("/me", response_model=UserResponse)
+def update_me(user_data: UserUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Update current user info"""
-    current_user_id = get_jwt_identity()
-    user = User.query.get(current_user_id)
+    if user_data.email:
+        new_email = user_data.email.lower().strip()
+        existing = db.query(User).filter(User.email == new_email, User.id != current_user.id).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Email already in use")
+        current_user.email = new_email
     
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
-    
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
-    
-    # Validate input
-    errors = update_user_schema.validate(data)
-    if errors:
-        return jsonify({'error': errors}), 400
-    
-    if 'email' in data and data['email']:
-        new_email = data['email'].lower().strip()
-        # Check if email is already taken by another user
-        existing = User.query.filter_by(email=new_email).first()
-        if existing and existing.id != user.id:
-            return jsonify({'error': 'Email already in use'}), 409
-        user.email = new_email
-    
-    if 'password' in data and data['password']:
-        user.hashed_password = bcrypt.hashpw(
-            data['password'].encode('utf-8'), 
+    if user_data.password:
+        current_user.hashed_password = bcrypt.hashpw(
+            user_data.password.encode('utf-8'), 
             bcrypt.gensalt()
         ).decode('utf-8')
     
-    db.session.commit()
+    db.commit()
+    db.refresh(current_user)
     
-    return jsonify({
-        'message': 'User updated successfully',
-        'user': user_schema.dump(user)
-    })
+    return current_user

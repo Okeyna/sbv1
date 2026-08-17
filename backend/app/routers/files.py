@@ -1,173 +1,178 @@
 import os
-from flask import Blueprint, request, jsonify, current_app
-from flask_jwt_extended import jwt_required, get_jwt_identity
-from werkzeug.utils import secure_filename
-from app.database import db
-from app.models import UploadedFile, StudyProgress
-from app.schemas import file_schema, files_schema
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.orm import Session
+from typing import List
+import time
+
+from app.database import get_db
+from app.models import UploadedFile, StudyProgress, User
+from app.schemas import FileResponse, FileListResponse, SummaryResponse
 from app.services.pdf_service import extract_text_from_pdf
 from app.services.ai_service import generate_summary
 from app.config import Config
+from app.routers.auth import get_current_user
 
-files_bp = Blueprint('files', __name__, url_prefix='/api/files')
+router = APIRouter()
 
 ALLOWED_EXTENSIONS = {'pdf'}
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
 
-def allowed_file(filename):
+def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-@files_bp.route('/upload', methods=['POST'])
-@jwt_required()
-def upload_file():
+@router.post("/upload", response_model=FileResponse, status_code=status.HTTP_201_CREATED)
+async def upload_file(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """Upload a PDF file"""
-    current_user_id = get_jwt_identity()
-    
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file provided'}), 400
-    
-    file = request.files['file']
-    
-    if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
-    
     if not allowed_file(file.filename):
-        return jsonify({'error': 'Only PDF files are allowed'}), 400
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
     
-    # Check file size
-    file.seek(0, os.SEEK_END)
-    file_size = file.tell()
-    file.seek(0)
+    # Read file content
+    content = await file.read()
+    file_size = len(content)
     
-    if file_size > Config.MAX_FILE_SIZE:
-        return jsonify({'error': 'File too large. Maximum size is 20MB'}), 400
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File too large. Maximum size is 20MB")
+    
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="File is empty")
     
     # Save file
-    filename = secure_filename(file.filename)
-    # Add timestamp to avoid conflicts
-    import time
-    timestamp = int(time.time())
-    filename = f"{timestamp}_{filename}"
-    
+    filename = f"{int(time.time())}_{file.filename}"
     filepath = os.path.join(Config.UPLOAD_FOLDER, filename)
     os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
-    file.save(filepath)
+    
+    with open(filepath, "wb") as f:
+        f.write(content)
     
     # Extract text from PDF
     try:
         text_content = extract_text_from_pdf(filepath)
     except Exception as e:
-        return jsonify({'error': f'Failed to extract text from PDF: {str(e)}'}), 500
+        raise HTTPException(status_code=500, detail=f"Failed to extract text from PDF: {str(e)}")
     
     if not text_content or len(text_content.strip()) == 0:
-        return jsonify({'error': 'PDF appears to be empty or unreadable'}), 400
+        raise HTTPException(status_code=400, detail="PDF appears to be empty or unreadable")
     
     # Create database record
     uploaded_file = UploadedFile(
-        user_id=current_user_id,
+        user_id=current_user.id,
         filename=filename,
         file_path=filepath,
         text_content=text_content,
         status='processing'
     )
     
-    db.session.add(uploaded_file)
-    db.session.commit()
+    db.add(uploaded_file)
+    db.commit()
+    db.refresh(uploaded_file)
     
-    # Generate summary asynchronously (in real app, use background task)
+    # Generate summary
     try:
         summary = generate_summary(text_content)
         uploaded_file.summary = summary
         uploaded_file.status = 'ready'
-        db.session.commit()
-    except Exception as e:
+        db.commit()
+    except Exception:
         uploaded_file.status = 'error'
-        db.session.commit()
-        # Still return the file, just without summary
+        db.commit()
     
     # Create progress record
     progress = StudyProgress(
-        user_id=current_user_id,
+        user_id=current_user.id,
         file_id=uploaded_file.id,
         completion=0.0,
         listening_time=0.0,
         quiz_avg=0.0
     )
-    db.session.add(progress)
-    db.session.commit()
+    db.add(progress)
+    db.commit()
     
-    return jsonify({
-        'message': 'File uploaded successfully',
-        'file': file_schema.dump(uploaded_file)
-    }), 201
+    return uploaded_file
 
-
-@files_bp.route('', methods=['GET'])
-@jwt_required()
-def get_files():
+@router.get("", response_model=FileListResponse)
+def get_files(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """Get all files for current user"""
-    current_user_id = get_jwt_identity()
-    files = UploadedFile.query.filter_by(user_id=current_user_id).order_by(UploadedFile.created_at.desc()).all()
-    return jsonify({'files': files_schema.dump(files)})
+    files = db.query(UploadedFile).filter(
+        UploadedFile.user_id == current_user.id
+    ).order_by(UploadedFile.created_at.desc()).all()
+    return {"files": files}
 
-
-@files_bp.route('/<int:file_id>', methods=['GET'])
-@jwt_required()
-def get_file(file_id):
+@router.get("/{file_id}", response_model=FileResponse)
+def get_file(
+    file_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """Get a specific file"""
-    current_user_id = get_jwt_identity()
-    uploaded_file = UploadedFile.query.filter_by(id=file_id, user_id=current_user_id).first()
+    uploaded_file = db.query(UploadedFile).filter(
+        UploadedFile.id == file_id,
+        UploadedFile.user_id == current_user.id
+    ).first()
     
     if not uploaded_file:
-        return jsonify({'error': 'File not found'}), 404
+        raise HTTPException(status_code=404, detail="File not found")
     
-    return jsonify({'file': file_schema.dump(uploaded_file)})
+    return uploaded_file
 
-
-@files_bp.route('/<int:file_id>', methods=['DELETE'])
-@jwt_required()
-def delete_file(file_id):
+@router.delete("/{file_id}")
+def delete_file(
+    file_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """Delete a file"""
-    current_user_id = get_jwt_identity()
-    uploaded_file = UploadedFile.query.filter_by(id=file_id, user_id=current_user_id).first()
+    uploaded_file = db.query(UploadedFile).filter(
+        UploadedFile.id == file_id,
+        UploadedFile.user_id == current_user.id
+    ).first()
     
     if not uploaded_file:
-        return jsonify({'error': 'File not found'}), 404
+        raise HTTPException(status_code=404, detail="File not found")
     
     # Delete physical file
     try:
         if os.path.exists(uploaded_file.file_path):
             os.remove(uploaded_file.file_path)
     except Exception:
-        pass  # Continue even if file deletion fails
+        pass
     
-    db.session.delete(uploaded_file)
-    db.session.commit()
+    db.delete(uploaded_file)
+    db.commit()
     
-    return jsonify({'message': 'File deleted successfully'})
+    return {"message": "File deleted successfully"}
 
-
-@files_bp.route('/<int:file_id>/summary', methods=['POST'])
-@jwt_required()
-def regenerate_summary(file_id):
+@router.post("/{file_id}/summary", response_model=SummaryResponse)
+def regenerate_summary(
+    file_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """Regenerate summary for a file"""
-    current_user_id = get_jwt_identity()
-    uploaded_file = UploadedFile.query.filter_by(id=file_id, user_id=current_user_id).first()
+    uploaded_file = db.query(UploadedFile).filter(
+        UploadedFile.id == file_id,
+        UploadedFile.user_id == current_user.id
+    ).first()
     
     if not uploaded_file:
-        return jsonify({'error': 'File not found'}), 404
+        raise HTTPException(status_code=404, detail="File not found")
     
     if not uploaded_file.text_content:
-        return jsonify({'error': 'No text content available'}), 400
+        raise HTTPException(status_code=400, detail="No text content available")
     
     try:
         summary = generate_summary(uploaded_file.text_content)
         uploaded_file.summary = summary
         uploaded_file.status = 'ready'
-        db.session.commit()
+        db.commit()
         
-        return jsonify({
-            'message': 'Summary regenerated successfully',
-            'summary': summary
-        })
+        return {"message": "Summary regenerated successfully", "summary": summary}
     except Exception as e:
-        return jsonify({'error': f'Failed to generate summary: {str(e)}'}), 500
+        raise HTTPException(status_code=500, detail=f"Failed to generate summary: {str(e)}")

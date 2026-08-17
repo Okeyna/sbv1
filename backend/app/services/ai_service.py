@@ -1,222 +1,130 @@
-"""AI service for generating summaries, quizzes, and answering questions"""
-import json
+"""AI Service for generating summaries, quizzes, and answers"""
 import os
-from app.config import Config
+import json
+from typing import Optional, Dict, Any
 
-# Try to import OpenAI, but don't fail if not available
-try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
+# Mock data for when OpenAI is not configured
+MOCK_SUMMARY = """• Key concept 1: Main idea from the material
+• Key concept 2: Important detail to remember  
+• Key concept 3: Critical takeaway
+• Key concept 4: Supporting evidence
+• Key concept 5: Practical application"""
 
-
-def _get_client():
-    """Get OpenAI client if configured"""
-    if Config.OPENAI_API_KEY and OPENAI_AVAILABLE:
-        return OpenAI(api_key=Config.OPENAI_API_KEY)
-    return None
-
-
-def generate_summary(text_content: str) -> str:
-    """
-    Generate a summary of the text content.
-    
-    Args:
-        text_content: The text to summarize
-        
-    Returns:
-        Summary as string with 5 bullet points
-    """
-    client = _get_client()
-    
-    if client and Config.OPENAI_API_KEY:
-        try:
-            # Truncate text if too long (OpenAI has token limits)
-            truncated_text = text_content[:8000] if len(text_content) > 8000 else text_content
-            
-            response = client.chat.completions.create(
-                model=Config.OPENAI_MODEL,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a helpful study assistant. Summarize the provided text into exactly 5 concise bullet points for studying."
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Summarize this study material into 5 bullet points:\n\n{truncated_text}"
-                    }
-                ],
-                max_tokens=500
-            )
-            
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            print(f"OpenAI API error: {e}")
-            # Fall through to mock response
-    
-    # Mock response when no API key is configured
-    return _generate_mock_summary(text_content)
-
-
-def _generate_mock_summary(text_content: str) -> str:
-    """Generate a deterministic mock summary"""
-    # Extract first few sentences as a simple summary
-    sentences = text_content.replace('\n', ' ').split('.')[:5]
-    summary_parts = []
-    
-    for i, sentence in enumerate(sentences, 1):
-        sentence = sentence.strip()
-        if sentence:
-            summary_parts.append(f"{i}. {sentence}.")
-    
-    if not summary_parts:
-        summary_parts = [
-            "1. Document contains study material.",
-            "2. Key concepts are presented throughout.",
-            "3. Important details should be reviewed.",
-            "4. Practice exercises may be included.",
-            "5. Review all sections for complete understanding."
-        ]
-    
-    return '\n'.join(summary_parts)
-
-
-def generate_quiz(text_content: str) -> list:
-    """
-    Generate quiz questions from text content.
-    
-    Args:
-        text_content: The text to generate questions from
-        
-    Returns:
-        List of question dictionaries with keys:
-        - question: str
-        - options: list[str] (4 options)
-        - correct_answer: int (index 0-3)
-        - explanation: str
-    """
-    client = _get_client()
-    
-    if client and Config.OPENAI_API_KEY:
-        try:
-            truncated_text = text_content[:8000] if len(text_content) > 8000 else text_content
-            
-            response = client.chat.completions.create(
-                model=Config.OPENAI_MODEL,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a helpful study assistant. Generate exactly 5 multiple-choice questions based on the provided text. Return ONLY valid JSON in this format: [{\"question\": \"...\", \"options\": [\"A\", \"B\", \"C\", \"D\"], \"correct_answer\": 0, \"explanation\": \"...\"}]"
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Generate 5 multiple-choice questions from this text:\n\n{truncated_text}"
-                    }
-                ],
-                response_format={"type": "json_object"},
-                max_tokens=1500
-            )
-            
-            result = response.choices[0].message.content
-            questions_data = json.loads(result)
-            
-            # Handle both array and object with questions key
-            if isinstance(questions_data, dict) and 'questions' in questions_data:
-                questions_data = questions_data['questions']
-            
-            if isinstance(questions_data, list) and len(questions_data) > 0:
-                return questions_data[:5]
-                
-        except Exception as e:
-            print(f"OpenAI API error: {e}")
-            # Fall through to mock response
-    
-    # Mock quiz generation
-    return _generate_mock_quiz(text_content)
-
-
-def _generate_mock_quiz(text_content: str) -> list:
-    """Generate deterministic mock quiz questions"""
-    # Extract some words from the text to make questions relevant
-    words = text_content.replace('\n', ' ').split()[:50]
-    key_terms = [w for w in words if len(w) > 5 and w.isalpha()]
-    
-    if len(key_terms) < 3:
-        key_terms = ["concept", "principle", "method", "theory", "approach"]
-    
-    questions = []
-    for i in range(5):
-        term = key_terms[i % len(key_terms)]
-        questions.append({
-            "question": f"What is the significance of {term} in this context?",
-            "options": [
-                f"It is a fundamental {term} that underpins the theory.",
-                f"It represents an alternative {term} approach.",
-                f"It is unrelated to the main {term} discussed.",
-                f"It contradicts the established {term} framework."
-            ],
+MOCK_QUIZ = {
+    "questions": [
+        {
+            "question": "What is the main topic discussed in this material?",
+            "options": ["Option A", "Option B", "Option C", "Option D"],
             "correct_answer": 0,
-            "explanation": f"The term '{term}' is central to understanding the material. It refers to a key concept that forms the foundation of the topic being studied."
-        })
-    
-    return questions
+            "explanation": "This is the correct answer based on the main theme."
+        },
+        {
+            "question": "Which concept is emphasized as most important?",
+            "options": ["Concept X", "Concept Y", "Concept Z", "Concept W"],
+            "correct_answer": 1,
+            "explanation": "The material highlights this as a key point."
+        },
+        {
+            "question": "What is the primary application of this knowledge?",
+            "options": ["Application 1", "Application 2", "Application 3", "Application 4"],
+            "correct_answer": 2,
+            "explanation": "This is the main practical use case mentioned."
+        },
+        {
+            "question": "Which term best describes the core principle?",
+            "options": ["Term A", "Term B", "Term C", "Term D"],
+            "correct_answer": 3,
+            "explanation": "This term captures the essence of the principle."
+        },
+        {
+            "question": "What conclusion can be drawn from the material?",
+            "options": ["Conclusion 1", "Conclusion 2", "Conclusion 3", "Conclusion 4"],
+            "correct_answer": 0,
+            "explanation": "This follows logically from the presented information."
+        }
+    ]
+}
 
+def get_openai_client():
+    """Get OpenAI client if configured"""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    
+    try:
+        from openai import OpenAI
+        return OpenAI(api_key=api_key)
+    except ImportError:
+        return None
 
-def answer_question(question: str, context: str) -> str:
-    """
-    Answer a question using the provided context.
-    
-    Args:
-        question: The user's question
-        context: The text content to use as context
-        
-    Returns:
-        AI-generated answer
-    """
-    client = _get_client()
-    
-    if client and Config.OPENAI_API_KEY:
-        try:
-            truncated_context = context[:8000] if len(context) > 8000 else context
-            
-            response = client.chat.completions.create(
-                model=Config.OPENAI_MODEL,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a helpful AI tutor. Answer questions based ONLY on the provided study material. If the answer cannot be found in the material, clearly state that you don't have enough information."
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Study material:\n\n{truncated_context}\n\nQuestion: {question}"
-                    }
-                ],
-                max_tokens=500
-            )
-            
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            print(f"OpenAI API error: {e}")
-            # Fall through to mock response
-    
-    # Mock response
-    return _generate_mock_answer(question, context)
+def truncate_text(text: str, max_tokens: int = 4000) -> str:
+    """Truncate text to fit within token limit"""
+    # Rough estimate: 1 token ≈ 4 characters
+    max_chars = max_tokens * 4
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "..."
 
+def generate_summary(text: str) -> str:
+    """Generate a summary of the text"""
+    client = get_openai_client()
+    
+    if not client:
+        return MOCK_SUMMARY
+    
+    try:
+        truncated = truncate_text(text)
+        response = client.chat.completions.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": "Summarize this study material into 5 concise bullet points for learning."},
+                {"role": "user", "content": truncated}
+            ],
+            max_tokens=500
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        return MOCK_SUMMARY
 
-def _generate_mock_answer(question: str, context: str) -> str:
-    """Generate a deterministic mock answer"""
-    # Simple keyword matching
-    question_lower = question.lower()
-    context_lower = context.lower()
+def generate_quiz(text: str) -> Dict[str, Any]:
+    """Generate a quiz from the text"""
+    client = get_openai_client()
     
-    # Check if question keywords appear in context
-    question_words = set(question_lower.split())
-    context_words = set(context_lower.split())
+    if not client:
+        return MOCK_QUIZ
     
-    matching_words = question_words & context_words
+    try:
+        truncated = truncate_text(text)
+        response = client.chat.completions.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": "Generate exactly 5 multiple-choice questions based on this material. Return valid JSON with format: {\"questions\": [{\"question\": \"...\", \"options\": [\"A\", \"B\", \"C\", \"D\"], \"correct_answer\": 0-3, \"explanation\": \"...\"}]}"},
+                {"role": "user", "content": truncated}
+            ],
+            response_format={"type": "json_object"}
+        )
+        result = json.loads(response.choices[0].message.content)
+        return result.get("questions", MOCK_QUIZ["questions"])
+    except Exception:
+        return MOCK_QUIZ
+
+def answer_question(context: str, question: str) -> str:
+    """Answer a question based on the context"""
+    client = get_openai_client()
     
-    if len(matching_words) > 2:
-        return f"Based on the study material, your question about '{question[:50]}...' relates to concepts found in the text. The material discusses relevant topics that address your query. Please review the sections containing these terms for more details."
-    else:
-        return "This question may relate to concepts in your study material. I recommend reviewing the uploaded document sections that discuss similar topics. For specific answers, please ensure your question directly references content from the material."
+    if not client:
+        return f"Based on the study material, here's what I found about your question: This is a mock response since no OpenAI API key is configured. In production, I would analyze the uploaded content and provide a specific answer to: '{question}'"
+    
+    try:
+        truncated = truncate_text(context)
+        response = client.chat.completions.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": "You are a helpful AI tutor. Answer questions based only on the provided study material. If the answer is not in the material, say so clearly."},
+                {"role": "user", "content": f"Context: {truncated}\n\nQuestion: {question}"}
+            ],
+            max_tokens=500
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        return f"I encountered an error processing your question. Please try again."

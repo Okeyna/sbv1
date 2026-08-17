@@ -1,178 +1,140 @@
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
-from datetime import datetime
-from app.database import db
-from app.models import Quiz, QuizQuestion, QuizAttempt, UploadedFile
-from app.schemas import quiz_schema, quizzes_schema, quiz_submit_schema, attempt_schema
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from typing import List
+import json
+
+from app.database import get_db
+from app.models import Quiz, QuizQuestion, QuizAttempt, UploadedFile, User
+from app.schemas import QuizResponse, QuizListResponse, QuizSubmitRequest, QuizAttemptResponse
 from app.services.ai_service import generate_quiz
+from app.routers.auth import get_current_user
 
-quizzes_bp = Blueprint('quizzes', __name__, url_prefix='/api/quizzes')
+router = APIRouter()
 
-@quizzes_bp.route('/generate/<int:file_id>', methods=['POST'])
-@jwt_required()
-def generate_quiz_route(file_id):
+@router.post("/generate/{file_id}", response_model=QuizResponse)
+def generate_quiz_endpoint(
+    file_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """Generate quiz from file"""
-    current_user_id = get_jwt_identity()
+    uploaded_file = db.query(UploadedFile).filter(
+        UploadedFile.id == file_id,
+        UploadedFile.user_id == current_user.id
+    ).first()
     
-    uploaded_file = UploadedFile.query.filter_by(id=file_id, user_id=current_user_id).first()
     if not uploaded_file:
-        return jsonify({'error': 'File not found'}), 404
+        raise HTTPException(status_code=404, detail="File not found")
     
     if not uploaded_file.text_content:
-        return jsonify({'error': 'No text content available'}), 400
+        raise HTTPException(status_code=400, detail="No text content available")
     
+    # Generate quiz
     try:
-        # Generate quiz questions
-        questions_data = generate_quiz(uploaded_file.text_content)
+        quiz_data = generate_quiz(uploaded_file.text_content)
         
-        if not questions_data or len(questions_data) == 0:
-            return jsonify({'error': 'Failed to generate quiz questions'}), 500
-        
-        # Create quiz
         quiz = Quiz(
-            user_id=current_user_id,
+            user_id=current_user.id,
             file_id=file_id,
-            title=f"Quiz: {uploaded_file.filename}",
-            difficulty='medium'
+            title=f"Quiz for {uploaded_file.filename}",
+            difficulty="medium"
         )
         
-        db.session.add(quiz)
-        db.session.flush()  # Get quiz ID before commit
+        db.add(quiz)
+        db.commit()
+        db.refresh(quiz)
         
-        # Create questions
-        for q_data in questions_data:
+        # Add questions
+        for q_data in quiz_data.get("questions", []):
             question = QuizQuestion(
                 quiz_id=quiz.id,
-                question=q_data['question'],
-                options=q_data['options'],
-                correct_answer=q_data['correct_answer'],
-                explanation=q_data.get('explanation', '')
+                question=q_data["question"],
+                options=json.dumps(q_data["options"]),
+                correct_answer=q_data["correct_answer"],
+                explanation=q_data["explanation"]
             )
-            db.session.add(question)
+            db.add(question)
         
-        db.session.commit()
+        db.commit()
+        db.refresh(quiz)
         
-        return jsonify({
-            'message': 'Quiz generated successfully',
-            'quiz': quiz_schema.dump(quiz)
-        }), 201
-        
+        return quiz
     except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': f'Failed to generate quiz: {str(e)}'}), 500
+        raise HTTPException(status_code=500, detail=f"Failed to generate quiz: {str(e)}")
 
+@router.get("/file/{file_id}", response_model=QuizListResponse)
+def get_file_quizzes(
+    file_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get all quizzes for a file"""
+    quizzes = db.query(Quiz).filter(
+        Quiz.file_id == file_id,
+        Quiz.user_id == current_user.id
+    ).all()
+    
+    return {"quizzes": quizzes}
 
-@quizzes_bp.route('/file/<int:file_id>', methods=['GET'])
-@jwt_required()
-def get_quizzes_for_file(file_id):
-    """Get all quizzes for a specific file"""
-    current_user_id = get_jwt_identity()
-    quizzes = Quiz.query.filter_by(file_id=file_id, user_id=current_user_id).order_by(Quiz.created_at.desc()).all()
-    return jsonify({'quizzes': quizzes_schema.dump(quizzes)})
-
-
-@quizzes_bp.route('/<int:quiz_id>', methods=['GET'])
-@jwt_required()
-def get_quiz(quiz_id):
-    """Get specific quiz with questions"""
-    current_user_id = get_jwt_identity()
-    quiz = Quiz.query.filter_by(id=quiz_id, user_id=current_user_id).first()
+@router.get("/{quiz_id}", response_model=QuizResponse)
+def get_quiz(
+    quiz_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get a specific quiz"""
+    quiz = db.query(Quiz).filter(
+        Quiz.id == quiz_id,
+        Quiz.user_id == current_user.id
+    ).first()
     
     if not quiz:
-        return jsonify({'error': 'Quiz not found'}), 404
+        raise HTTPException(status_code=404, detail="Quiz not found")
     
-    return jsonify({'quiz': quiz_schema.dump(quiz)})
+    return quiz
 
-
-@quizzes_bp.route('/<int:quiz_id>/submit', methods=['POST'])
-@jwt_required()
-def submit_quiz(quiz_id):
+@router.post("/{quiz_id}/submit", response_model=QuizAttemptResponse)
+def submit_quiz(
+    quiz_id: int,
+    submission: QuizSubmitRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """Submit quiz answers"""
-    current_user_id = get_jwt_identity()
+    quiz = db.query(Quiz).filter(
+        Quiz.id == quiz_id,
+        Quiz.user_id == current_user.id
+    ).first()
     
-    quiz = Quiz.query.filter_by(id=quiz_id, user_id=current_user_id).first()
     if not quiz:
-        return jsonify({'error': 'Quiz not found'}), 404
+        raise HTTPException(status_code=404, detail="Quiz not found")
     
-    data = request.get_json()
-    if not data or 'answers' not in data:
-        return jsonify({'error': 'Answers required'}), 400
+    questions = db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz_id).all()
     
-    user_answers = data['answers']
-    questions = QuizQuestion.query.filter_by(quiz_id=quiz_id).all()
-    
-    if len(user_answers) != len(questions):
-        return jsonify({'error': 'Number of answers does not match number of questions'}), 400
+    if len(questions) != len(submission.answers):
+        raise HTTPException(status_code=400, detail="Number of answers doesn't match questions")
     
     # Calculate score
-    correct_count = 0
+    correct = 0
+    for i, answer in enumerate(submission.answers):
+        if answer == questions[i].correct_answer:
+            correct += 1
+    
     total = len(questions)
-    
-    for i, question in enumerate(questions):
-        if i < len(user_answers) and user_answers[i] == question.correct_answer:
-            correct_count += 1
-    
-    score = int((correct_count / total) * 100) if total > 0 else 0
+    score = int((correct / total) * 100) if total > 0 else 0
     
     # Create attempt record
     attempt = QuizAttempt(
-        user_id=current_user_id,
+        user_id=current_user.id,
         quiz_id=quiz_id,
         score=score,
-        correct=correct_count,
+        correct=correct,
         total=total,
-        answers=user_answers
+        answers=json.dumps(submission.answers)
     )
     
-    db.session.add(attempt)
+    db.add(attempt)
+    db.commit()
+    db.refresh(attempt)
     
-    # Update progress average
-    from app.models import StudyProgress
-    progress = StudyProgress.query.filter_by(user_id=current_user_id, file_id=quiz.file_id).first()
-    if progress:
-        # Recalculate average quiz score
-        all_attempts = QuizAttempt.query.join(Quiz).filter(
-            Quiz.user_id == current_user_id,
-            Quiz.file_id == quiz.file_id
-        ).all()
-        
-        if all_attempts:
-            avg_score = sum(a.score for a in all_attempts) / len(all_attempts)
-            progress.quiz_avg = avg_score
-    
-    db.session.commit()
-    
-    # Build results with explanations
-    results = []
-    for i, question in enumerate(questions):
-        results.append({
-            'question': question.question,
-            'your_answer': user_answers[i] if i < len(user_answers) else None,
-            'correct_answer': question.correct_answer,
-            'options': question.options,
-            'is_correct': i < len(user_answers) and user_answers[i] == question.correct_answer,
-            'explanation': question.explanation
-        })
-    
-    return jsonify({
-        'score': score,
-        'correct': correct_count,
-        'total': total,
-        'results': results
-    })
-
-
-@quizzes_bp.route('/<int:quiz_id>', methods=['DELETE'])
-@jwt_required()
-def delete_quiz(quiz_id):
-    """Delete a quiz"""
-    current_user_id = get_jwt_identity()
-    quiz = Quiz.query.filter_by(id=quiz_id, user_id=current_user_id).first()
-    
-    if not quiz:
-        return jsonify({'error': 'Quiz not found'}), 404
-    
-    db.session.delete(quiz)
-    db.session.commit()
-    
-    return jsonify({'message': 'Quiz deleted successfully'})
+    return attempt

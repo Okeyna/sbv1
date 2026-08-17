@@ -1,9 +1,23 @@
-from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+from app.config import Config
 
-db = SQLAlchemy()
+# Create engine
+engine = create_engine(
+    Config.DATABASE_URL,
+    connect_args={"check_same_thread": False} if "sqlite" in Config.DATABASE_URL else {}
+)
 
-def init_db(app):
-    """Initialize database with Flask app"""
-    # db.init_app is called in create_app already
-    with app.app_context():
-        db.create_all()
+# Session factory
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Base class for models
+Base = declarative_base()
+
+def get_db():
+    """Dependency for getting database session"""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

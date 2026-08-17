@@ -1,88 +1,62 @@
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
-from app.database import db
-from app.models import AIChat, UploadedFile
-from app.schemas import chat_schema, chats_schema
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from typing import List
+
+from app.database import get_db
+from app.models import AIChat, UploadedFile, User
+from app.schemas import ChatMessageRequest, ChatMessageResponse, ChatHistoryResponse
 from app.services.ai_service import answer_question
+from app.routers.auth import get_current_user
 
-chat_bp = Blueprint('chat', __name__, url_prefix='/api/chat')
+router = APIRouter()
 
-@chat_bp.route('/message', methods=['POST'])
-@jwt_required()
-def send_message():
-    """Send a message to AI tutor"""
-    current_user_id = get_jwt_identity()
-    data = request.get_json()
+@router.post("/message", response_model=ChatMessageResponse)
+def send_message(
+    message_data: ChatMessageRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Send a chat message"""
+    uploaded_file = db.query(UploadedFile).filter(
+        UploadedFile.id == message_data.file_id,
+        UploadedFile.user_id == current_user.id
+    ).first()
     
-    if not data or 'message' not in data or 'file_id' not in data:
-        return jsonify({'error': 'Message and file_id required'}), 400
-    
-    message = data['message']
-    file_id = data['file_id']
-    
-    # Get file context
-    uploaded_file = UploadedFile.query.filter_by(id=file_id, user_id=current_user_id).first()
     if not uploaded_file:
-        return jsonify({'error': 'File not found'}), 404
+        raise HTTPException(status_code=404, detail="File not found")
     
     if not uploaded_file.text_content:
-        return jsonify({'error': 'No text content available for this file'}), 400
+        raise HTTPException(status_code=400, detail="No text content available")
     
+    # Get AI response
     try:
-        # Get AI response with file context
-        response = answer_question(message, uploaded_file.text_content)
+        response_text = answer_question(uploaded_file.text_content, message_data.message)
         
-        # Store chat message
         chat_message = AIChat(
-            user_id=current_user_id,
-            file_id=file_id,
-            message=message,
-            response=response
+            user_id=current_user.id,
+            file_id=message_data.file_id,
+            message=message_data.message,
+            response=response_text
         )
         
-        db.session.add(chat_message)
-        db.session.commit()
+        db.add(chat_message)
+        db.commit()
+        db.refresh(chat_message)
         
-        return jsonify({
-            'message': message,
-            'response': response,
-            'id': chat_message.id,
-            'created_at': chat_message.created_at.isoformat() if chat_message.created_at else None
-        })
-        
+        return chat_message
     except Exception as e:
-        return jsonify({'error': f'Failed to get AI response: {str(e)}'}), 500
+        raise HTTPException(status_code=500, detail=f"Failed to get AI response: {str(e)}")
 
-
-@chat_bp.route('/<int:file_id>', methods=['GET'])
-@jwt_required()
-def get_chat_history(file_id):
-    """Get chat history for a specific file"""
-    current_user_id = get_jwt_identity()
-    chats = AIChat.query.filter_by(file_id=file_id, user_id=current_user_id).order_by(AIChat.created_at.asc()).all()
-    return jsonify({'chats': chats_schema.dump(chats)})
-
-
-@chat_bp.route('/history', methods=['GET'])
-@jwt_required()
-def get_all_chat_history():
-    """Get all chat history for current user"""
-    current_user_id = get_jwt_identity()
-    chats = AIChat.query.filter_by(user_id=current_user_id).order_by(AIChat.created_at.desc()).limit(50).all()
-    return jsonify({'chats': chats_schema.dump(chats)})
-
-
-@chat_bp.route('/<int:chat_id>', methods=['DELETE'])
-@jwt_required()
-def delete_chat(chat_id):
-    """Delete a chat message"""
-    current_user_id = get_jwt_identity()
-    chat = AIChat.query.filter_by(id=chat_id, user_id=current_user_id).first()
+@router.get("/{file_id}", response_model=ChatHistoryResponse)
+def get_chat_history(
+    file_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get chat history for a file"""
+    messages = db.query(AIChat).filter(
+        AIChat.file_id == file_id,
+        AIChat.user_id == current_user.id
+    ).order_by(AIChat.created_at.asc()).all()
     
-    if not chat:
-        return jsonify({'error': 'Chat not found'}), 404
-    
-    db.session.delete(chat)
-    db.session.commit()
-    
-    return jsonify({'message': 'Chat deleted successfully'})
+    return {"messages": messages}
