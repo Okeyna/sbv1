@@ -27,3 +27,4 @@ studybuddy.db
 .next/
 dist/
 build/
+node_modules/
