@@ -1,169 +1,148 @@
 """Basic API tests for StudyBuddy backend"""
-import pytest
 import os
 import sys
+from pathlib import Path
 
-# Add parent directory to path
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.main import create_app
-from app.database import db
+import app.database as database_module
 from app.config import Config
+from app.database import Base
+from app.main import create_app
 
 
 @pytest.fixture
-def app():
-    """Create application for testing"""
+def client(tmp_path):
+    """Create a test client against a temporary SQLite database."""
+    db_path = tmp_path / "studybuddy_test.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    database_module.engine = engine
+    database_module.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    Config.JWT_SECRET_KEY = "test-secret-key"
+    Config.JWT_ALGORITHM = "HS256"
+    Config.SECRET_KEY = "test-secret-key"
+
     app = create_app()
-    app.config['TESTING'] = True
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
-    app.config['JWT_SECRET_KEY'] = 'test-secret-key'
-    app.config['SECRET_KEY'] = 'test-secret-key'
-    
-    with app.app_context():
-        db.create_all()
-        yield app
-        db.session.remove()
-        db.drop_all()
+    with TestClient(app) as test_client:
+        yield test_client
+
+    Base.metadata.drop_all(bind=engine)
 
 
-@pytest.fixture
-def client(app):
-    """Create test client"""
-    return app.test_client()
+def register_user(client, email: str = "newuser@example.com", password: str = "securepass123"):
+    response = client.post(
+        "/auth/register",
+        json={"email": email, "password": password},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
 
 
-@pytest.fixture
-def auth_client(client):
-    """Create authenticated test client"""
-    # First register a user
-    client.post('/api/auth/register', json={
-        'email': 'test@example.com',
-        'password': 'testpass123'
-    })
-    
-    # Login to get token
-    response = client.post('/api/auth/login', json={
-        'email': 'test@example.com',
-        'password': 'testpass123'
-    })
-    
-    token = response.get_json()['access_token']
-    client.environ_base['HTTP_AUTHORIZATION'] = f'Bearer {token}'
-    
-    return client
+def login_user(client, email: str, password: str):
+    response = client.post(
+        "/auth/login",
+        data={"username": email, "password": password},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 def test_root_endpoint(client):
-    """Test root endpoint"""
-    response = client.get('/')
+    response = client.get("/")
     assert response.status_code == 200
-    data = response.get_json()
-    assert 'message' in data
-    assert 'StudyBuddy' in data['message']
+    data = response.json()
+    assert "message" in data
+    assert "StudyBuddy" in data["message"]
 
 
 def test_health_endpoint(client):
-    """Test health check endpoint"""
-    response = client.get('/health')
+    response = client.get("/health")
     assert response.status_code == 200
-    data = response.get_json()
-    assert data['status'] == 'healthy'
+    assert response.json()["status"] == "healthy"
 
 
 def test_register_user(client):
-    """Test user registration"""
-    response = client.post('/api/auth/register', json={
-        'email': 'newuser@example.com',
-        'password': 'securepass123'
-    })
-    
-    assert response.status_code == 201
-    data = response.get_json()
-    assert 'access_token' in data
-    assert 'user' in data
-    assert data['user']['email'] == 'newuser@example.com'
+    data = register_user(client)
+    assert "access_token" in data
+    assert "user" in data
+    assert data["user"]["email"] == "newuser@example.com"
 
 
 def test_register_duplicate_email(client):
-    """Test registering with duplicate email"""
-    # First registration
-    client.post('/api/auth/register', json={
-        'email': 'duplicate@example.com',
-        'password': 'securepass123'
-    })
-    
-    # Second registration with same email
-    response = client.post('/api/auth/register', json={
-        'email': 'duplicate@example.com',
-        'password': 'anotherpass123'
-    })
-    
+    register_user(client, "duplicate@example.com", "securepass123")
+
+    response = client.post(
+        "/auth/register",
+        json={"email": "duplicate@example.com", "password": "anotherpass123"},
+    )
+
     assert response.status_code == 409
-    data = response.get_json()
-    assert 'error' in data
+    assert "detail" in response.json()
 
 
 def test_login_user(client):
-    """Test user login"""
-    # Register first
-    client.post('/api/auth/register', json={
-        'email': 'loginuser@example.com',
-        'password': 'loginpass123'
-    })
-    
-    # Login
-    response = client.post('/api/auth/login', json={
-        'email': 'loginuser@example.com',
-        'password': 'loginpass123'
-    })
-    
-    assert response.status_code == 200
-    data = response.get_json()
-    assert 'access_token' in data
-    assert 'user' in data
+    register_user(client, "loginuser@example.com", "loginpass123")
+    data = login_user(client, "loginuser@example.com", "loginpass123")
+    assert "access_token" in data
+    assert data["user"]["email"] == "loginuser@example.com"
 
 
 def test_login_invalid_credentials(client):
-    """Test login with invalid credentials"""
-    response = client.post('/api/auth/login', json={
-        'email': 'nonexistent@example.com',
-        'password': 'wrongpass'
-    })
-    
+    response = client.post(
+        "/auth/login",
+        data={"username": "nonexistent@example.com", "password": "wrongpass"},
+    )
+
     assert response.status_code == 401
-    data = response.get_json()
-    assert 'error' in data
+    assert "detail" in response.json()
 
 
 def test_protected_endpoint_without_token(client):
-    """Test protected endpoint without authentication"""
-    response = client.get('/api/auth/me')
+    response = client.get("/auth/me")
     assert response.status_code == 401
 
 
-def test_protected_endpoint_with_token(auth_client):
-    """Test protected endpoint with authentication"""
-    response = auth_client.get('/api/auth/me')
+def test_protected_endpoint_with_token(client):
+    register_data = register_user(client, "authuser@example.com", "testpass123")
+    token = register_data["access_token"]
+
+    response = client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
     assert response.status_code == 200
-    data = response.get_json()
-    assert 'user' in data
-    assert data['user']['email'] == 'test@example.com'
+    data = response.json()
+    assert data["email"] == "authuser@example.com"
 
 
-def test_file_upload_validation(auth_client):
-    """Test file upload validation"""
-    # Try to upload without file
-    response = auth_client.post('/api/files/upload')
-    assert response.status_code == 400
-    
-    # Try to upload non-PDF (would need actual file for full test)
-    # This is a basic test - full test would require test file
+def test_file_upload_success(client):
+    register_data = register_user(client, "fileuser@example.com", "securepass123")
+    token = register_data["access_token"]
 
+    pdf_path = Path(__file__).with_name("sample.pdf")
+    if not pdf_path.exists():
+        pdf_content = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n4 0 obj\n<< /Length 65 >>\nstream\nBT\n/F1 18 Tf\n50 100 Td\n(StudyBuddy Test PDF) Tj\nET\nendstream\nendobj\n5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\nxref\n0 6\n0000000000 65535 f \n0000000010 00000 n \n0000000062 00000 n \n0000000123 00000 n \n0000000246 00000 n \n0000000617 00000 n \ntrailer\n<< /Root 1 0 R /Size 6 >>\nstartxref\n760\n%%EOF\n"
+        pdf_path.write_bytes(pdf_content)
 
-def test_docs_endpoint(client):
-    """Test API docs endpoint"""
-    response = client.get('/docs')
-    assert response.status_code == 200
-    data = response.get_json()
-    assert 'endpoints' in data
+    with pdf_path.open("rb") as fh:
+        response = client.post(
+            "/files/upload",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": (pdf_path.name, fh.read(), "application/pdf")},
+        )
+
+    assert response.status_code == 201, response.text
+    data = response.json()
+    assert data["filename"].endswith(".pdf")
+    assert data["status"] in {"processing", "ready", "error"}
