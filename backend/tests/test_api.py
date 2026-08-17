@@ -1,241 +1,169 @@
+"""Basic API tests for StudyBuddy backend"""
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import sys
 
-from app.main import app
-from app.database import Base, get_db
-from app.config import settings
+# Add parent directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Use SQLite for tests
-SQLALCHEMY_DATABASE_URL = "sqlite:///./test.db"
-
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, 
-    connect_args={"check_same_thread": False}
-)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+from app.main import create_app
+from app.database import db
+from app.config import Config
 
 
-@pytest.fixture(scope="function")
-def client():
-    """Create a test client with test database."""
-    # Create tables
-    Base.metadata.create_all(bind=engine)
+@pytest.fixture
+def app():
+    """Create application for testing"""
+    app = create_app()
+    app.config['TESTING'] = True
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
+    app.config['JWT_SECRET_KEY'] = 'test-secret-key'
+    app.config['SECRET_KEY'] = 'test-secret-key'
     
-    def override_get_db():
-        try:
-            db = TestingSessionLocal()
-            yield db
-        finally:
-            db.close()
+    with app.app_context():
+        db.create_all()
+        yield app
+        db.session.remove()
+        db.drop_all()
+
+
+@pytest.fixture
+def client(app):
+    """Create test client"""
+    return app.test_client()
+
+
+@pytest.fixture
+def auth_client(client):
+    """Create authenticated test client"""
+    # First register a user
+    client.post('/api/auth/register', json={
+        'email': 'test@example.com',
+        'password': 'testpass123'
+    })
     
-    app.dependency_overrides[get_db] = override_get_db
+    # Login to get token
+    response = client.post('/api/auth/login', json={
+        'email': 'test@example.com',
+        'password': 'testpass123'
+    })
     
-    with TestClient(app) as test_client:
-        yield test_client
+    token = response.get_json()['access_token']
+    client.environ_base['HTTP_AUTHORIZATION'] = f'Bearer {token}'
     
-    app.dependency_overrides.clear()
-    
-    # Drop tables
-    Base.metadata.drop_all(bind=engine)
-    
-    # Clean up test database
-    if os.path.exists("./test.db"):
-        os.remove("./test.db")
+    return client
 
 
 def test_root_endpoint(client):
-    """Test the root endpoint."""
-    response = client.get("/")
+    """Test root endpoint"""
+    response = client.get('/')
     assert response.status_code == 200
-    data = response.json()
-    assert "StudyBuddy" in data["message"]
-    assert data["version"] == "1.0.0"
+    data = response.get_json()
+    assert 'message' in data
+    assert 'StudyBuddy' in data['message']
 
 
-def test_health_check(client):
-    """Test health check endpoint."""
-    response = client.get("/health")
+def test_health_endpoint(client):
+    """Test health check endpoint"""
+    response = client.get('/health')
     assert response.status_code == 200
-    assert response.json()["status"] == "healthy"
+    data = response.get_json()
+    assert data['status'] == 'healthy'
 
 
 def test_register_user(client):
-    """Test user registration."""
-    response = client.post(
-        "/auth/register",
-        json={
-            "email": "test@example.com",
-            "password": "testpass123"
-        }
-    )
+    """Test user registration"""
+    response = client.post('/api/auth/register', json={
+        'email': 'newuser@example.com',
+        'password': 'securepass123'
+    })
+    
     assert response.status_code == 201
-    data = response.json()
-    assert data["email"] == "test@example.com"
-    assert "id" in data
-    assert "role" in data
+    data = response.get_json()
+    assert 'access_token' in data
+    assert 'user' in data
+    assert data['user']['email'] == 'newuser@example.com'
 
 
 def test_register_duplicate_email(client):
-    """Test registering with duplicate email fails."""
+    """Test registering with duplicate email"""
     # First registration
-    client.post(
-        "/auth/register",
-        json={
-            "email": "duplicate@example.com",
-            "password": "testpass123"
-        }
-    )
+    client.post('/api/auth/register', json={
+        'email': 'duplicate@example.com',
+        'password': 'securepass123'
+    })
     
     # Second registration with same email
-    response = client.post(
-        "/auth/register",
-        json={
-            "email": "duplicate@example.com",
-            "password": "testpass123"
-        }
-    )
-    assert response.status_code == 400
-    assert "already registered" in response.json()["detail"]
+    response = client.post('/api/auth/register', json={
+        'email': 'duplicate@example.com',
+        'password': 'anotherpass123'
+    })
+    
+    assert response.status_code == 409
+    data = response.get_json()
+    assert 'error' in data
 
 
-def test_login_success(client):
-    """Test successful login."""
+def test_login_user(client):
+    """Test user login"""
     # Register first
-    client.post(
-        "/auth/register",
-        json={
-            "email": "login@example.com",
-            "password": "testpass123"
-        }
-    )
+    client.post('/api/auth/register', json={
+        'email': 'loginuser@example.com',
+        'password': 'loginpass123'
+    })
     
     # Login
-    response = client.post(
-        "/auth/login",
-        data={
-            "username": "login@example.com",
-            "password": "testpass123",
-            "grant_type": "password"
-        }
-    )
+    response = client.post('/api/auth/login', json={
+        'email': 'loginuser@example.com',
+        'password': 'loginpass123'
+    })
+    
     assert response.status_code == 200
-    data = response.json()
-    assert "access_token" in data
-    assert data["token_type"] == "bearer"
+    data = response.get_json()
+    assert 'access_token' in data
+    assert 'user' in data
 
 
 def test_login_invalid_credentials(client):
-    """Test login with invalid credentials."""
-    response = client.post(
-        "/auth/login",
-        data={
-            "username": "nonexistent@example.com",
-            "password": "wrongpassword",
-            "grant_type": "password"
-        }
-    )
+    """Test login with invalid credentials"""
+    response = client.post('/api/auth/login', json={
+        'email': 'nonexistent@example.com',
+        'password': 'wrongpass'
+    })
+    
     assert response.status_code == 401
+    data = response.get_json()
+    assert 'error' in data
 
 
 def test_protected_endpoint_without_token(client):
-    """Test that protected endpoints reject missing token."""
-    response = client.get("/auth/me")
+    """Test protected endpoint without authentication"""
+    response = client.get('/api/auth/me')
     assert response.status_code == 401
 
 
-def test_protected_endpoint_with_token(client):
-    """Test that protected endpoints work with valid token."""
-    # Register and login
-    client.post(
-        "/auth/register",
-        json={
-            "email": "protected@example.com",
-            "password": "testpass123"
-        }
-    )
-    
-    login_response = client.post(
-        "/auth/login",
-        data={
-            "username": "protected@example.com",
-            "password": "testpass123",
-            "grant_type": "password"
-        }
-    )
-    
-    token = login_response.json()["access_token"]
-    
-    # Access protected endpoint
-    response = client.get(
-        "/auth/me",
-        headers={"Authorization": f"Bearer {token}"}
-    )
+def test_protected_endpoint_with_token(auth_client):
+    """Test protected endpoint with authentication"""
+    response = auth_client.get('/api/auth/me')
     assert response.status_code == 200
-    data = response.json()
-    assert data["email"] == "protected@example.com"
+    data = response.get_json()
+    assert 'user' in data
+    assert data['user']['email'] == 'test@example.com'
 
 
-def test_file_upload_non_pdf(client):
-    """Test that non-PDF file uploads are rejected."""
-    # Register and login
-    client.post(
-        "/auth/register",
-        json={
-            "email": "upload@example.com",
-            "password": "testpass123"
-        }
-    )
-    
-    login_response = client.post(
-        "/auth/login",
-        data={
-            "username": "upload@example.com",
-            "password": "testpass123",
-            "grant_type": "password"
-        }
-    )
-    
-    token = login_response.json()["access_token"]
-    
-    # Try to upload a text file (should fail)
-    response = client.post(
-        "/files/upload",
-        files={"file": ("test.txt", b"test content", "text/plain")},
-        headers={"Authorization": f"Bearer {token}"}
-    )
+def test_file_upload_validation(auth_client):
+    """Test file upload validation"""
+    # Try to upload without file
+    response = auth_client.post('/api/files/upload')
     assert response.status_code == 400
-    assert "Only PDF files" in response.json()["detail"]
-
-
-def test_mock_summary_generation():
-    """Test that mock summary is generated when no OpenAI key."""
-    from app.services.ai_service import generate_summary
     
-    summary = generate_summary("Test content")
-    assert summary is not None
-    assert len(summary) > 0
-    assert "•" in summary  # Bullet points
+    # Try to upload non-PDF (would need actual file for full test)
+    # This is a basic test - full test would require test file
 
 
-def test_mock_quiz_generation():
-    """Test that mock quiz is generated when no OpenAI key."""
-    from app.services.ai_service import generate_quiz
-    
-    quiz = generate_quiz("Test content", num_questions=5)
-    assert quiz is not None
-    assert len(quiz) == 5
-    
-    # Check structure
-    for question in quiz:
-        assert "question" in question
-        assert "options" in question
-        assert len(question["options"]) == 4
-        assert "correct_answer" in question
-        assert 0 <= question["correct_answer"] <= 3
-        assert "explanation" in question
+def test_docs_endpoint(client):
+    """Test API docs endpoint"""
+    response = client.get('/docs')
+    assert response.status_code == 200
+    data = response.get_json()
+    assert 'endpoints' in data

@@ -1,39 +1,18 @@
-from pydantic_settings import BaseSettings
-from typing import List
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
 
-class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
-    
-    # Database
-    database_url: str = "sqlite:///./studybuddy.db"
-    
-    # JWT
-    secret_key: str = "change-this-in-production-use-a-secure-random-string"
-    access_token_expire_minutes: int = 1440
-    algorithm: str = "HS256"
-    
-    # OpenAI
-    openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
-    
-    # TTS
-    tts_provider: str = "mock"
-    
-    # CORS
-    frontend_origin: str = "http://localhost:5173"
-    allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
-    
-    # File upload
-    max_file_size: int = 20 * 1024 * 1024  # 20 MB
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-    
-    def get_allowed_origins(self) -> List[str]:
-        """Parse allowed origins from comma-separated string."""
-        return [origin.strip() for origin in self.allowed_origins.split(",")]
-
-
-settings = Settings()
+class Config:
+    SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
+    JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'dev-jwt-secret-change-in-production')
+    DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///./studybuddy.db')
+    ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv('ACCESS_TOKEN_EXPIRE_MINUTES', '1440'))
+    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+    OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+    TTS_PROVIDER = os.getenv('TTS_PROVIDER', 'mock')
+    FRONTEND_ORIGIN = os.getenv('FRONTEND_ORIGIN', 'http://localhost:5173')
+    ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173').split(',')
+    UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
+    AUDIO_FOLDER = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'audio')
+    MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB

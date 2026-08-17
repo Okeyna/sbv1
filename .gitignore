@@ -1,67 +1,50 @@
-# Python
+```
+# Dependencies
+.venv/
+venv/
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
+*.pyc
+*.pyo
+*.pyd
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+*.pot
+*.po
+*~
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
 .eggs/
-lib/
-lib64/
+eggs/
 parts/
 sdist/
-var/
-wheels/
-*.egg-info/
+develop-eggs/
 .installed.cfg
-*.egg
-
-# Virtual environments
-venv/
-env/
-ENV/
-.venv
-
-# IDE
+lib/
+lib64/
+placehold
+.env
+.env.local
+.env.*
+.DS_Store
+Thumbs.db
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
-
-# Environment variables
-.env
-.env.local
-
-# Database
-*.db
-*.sqlite3
-
-# Logs
-*.log
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Node
-node_modules/
-npm-debug.log
-yarn-error.log
+*.tmp
 dist/
-
-# Uploads
-backend/uploads/*
-!backend/uploads/.gitkeep
-backend/audio/*
-!backend/audio/.gitkeep
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.next/
+build/
+target/
+.gradle/
+node_modules/
+```.next/

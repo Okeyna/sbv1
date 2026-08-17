@@ -1,1 +1,1 @@
-"""Backend tests."""
+"""StudyBuddy Backend Tests"""

@@ -1,1 +1,1 @@
-"""StudyBuddy Backend Application"""
+"""StudyBuddy Backend Application Package"""

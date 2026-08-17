@@ -1,30 +1,9 @@
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from .config import settings
+from flask_sqlalchemy import SQLAlchemy
 
-# Create database engine
-# For SQLite, we need check_same_thread=False for FastAPI compatibility
-connect_args = {}
-if settings.database_url.startswith("sqlite"):
-    connect_args["check_same_thread"] = False
+db = SQLAlchemy()
 
-engine = create_engine(
-    settings.database_url,
-    connect_args=connect_args
-)
-
-# Session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Base class for models
-Base = declarative_base()
-
-
-def get_db():
-    """Dependency to get database session."""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+def init_db(app):
+    """Initialize database with Flask app"""
+    # db.init_app is called in create_app already
+    with app.app_context():
+        db.create_all()

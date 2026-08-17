@@ -1,188 +1,140 @@
-from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List
+from marshmallow import Schema, fields, validate, validates, ValidationError
 from datetime import datetime
 
+# User Schemas
+class UserSchema(Schema):
+    id = fields.Int(dump_only=True)
+    email = fields.Email(required=True)
+    role = fields.Str(dump_only=True)
+    subscription_type = fields.Str(dump_only=True)
+    created_at = fields.DateTime(dump_only=True)
 
-# User schemas
-class UserBase(BaseModel):
-    email: EmailStr
-
-
-class UserCreate(UserBase):
-    password: str = Field(..., min_length=6)
-
-
-class UserUpdate(BaseModel):
-    email: Optional[EmailStr] = None
-    password: Optional[str] = Field(None, min_length=6)
-
-
-class UserResponse(UserBase):
-    id: int
-    role: str
-    subscription_type: str
-    created_at: datetime
+class UserRegisterSchema(Schema):
+    email = fields.Email(required=True)
+    password = fields.Str(required=True, validate=validate.Length(min=6))
     
-    class Config:
-        from_attributes = True
+    @validates('email')
+    def validate_email(self, value):
+        if not value or not value.strip():
+            raise ValidationError('Email is required')
 
+class UserLoginSchema(Schema):
+    email = fields.Email(required=True)
+    password = fields.Str(required=True)
 
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    expires_in: int
+class UserUpdateSchema(Schema):
+    email = fields.Email()
+    password = fields.Str(validate=validate.Length(min=6))
 
+# File Schemas
+class FileSchema(Schema):
+    id = fields.Int(dump_only=True)
+    filename = fields.Str()
+    file_path = fields.Str()
+    text_content = fields.Str()
+    summary = fields.Str()
+    status = fields.Str()
+    created_at = fields.DateTime(dump_only=True)
+    user_id = fields.Int()
 
-class TokenData(BaseModel):
-    user_id: Optional[int] = None
-    email: Optional[str] = None
+class FileUploadSchema(Schema):
+    file = fields.Field(required=True)
 
+# Audio Schemas
+class AudioLessonSchema(Schema):
+    id = fields.Int(dump_only=True)
+    user_id = fields.Int()
+    file_id = fields.Int(required=True)
+    audio_path = fields.Str()
+    audio_url = fields.Str()
+    duration = fields.Float()
+    voice_type = fields.Str()
+    position_seconds = fields.Float()
+    created_at = fields.DateTime(dump_only=True)
 
-# File schemas
-class FileUpload(BaseModel):
-    filename: str
-    status: str = "processing"
+class AudioPositionSchema(Schema):
+    position_seconds = fields.Float(required=True)
 
+# Quiz Schemas
+class QuizQuestionSchema(Schema):
+    id = fields.Int(dump_only=True)
+    question = fields.Str()
+    options = fields.List(fields.Str())
+    correct_answer = fields.Int()
+    explanation = fields.Str()
 
-class FileResponse(BaseModel):
-    id: int
-    user_id: int
-    filename: str
-    file_path: str
-    text_content: Optional[str] = None
-    summary: Optional[str] = None
-    status: str
-    created_at: datetime
-    
-    class Config:
-        from_attributes = True
+class QuizSchema(Schema):
+    id = fields.Int(dump_only=True)
+    user_id = fields.Int()
+    file_id = fields.Int(required=True)
+    title = fields.Str()
+    difficulty = fields.Str()
+    created_at = fields.DateTime(dump_only=True)
+    questions = fields.Nested(QuizQuestionSchema, many=True)
 
+class QuizSubmitSchema(Schema):
+    answers = fields.List(fields.Int(), required=True)  # List of selected option indices
 
-class FileListResponse(BaseModel):
-    files: List[FileResponse]
-    total: int
+class QuizAttemptSchema(Schema):
+    id = fields.Int(dump_only=True)
+    user_id = fields.Int()
+    quiz_id = fields.Int()
+    score = fields.Int()
+    correct = fields.Int()
+    total = fields.Int()
+    answers = fields.List(fields.Int())
+    completed_at = fields.DateTime(dump_only=True)
 
+# Chat Schemas
+class ChatMessageSchema(Schema):
+    id = fields.Int(dump_only=True)
+    user_id = fields.Int()
+    file_id = fields.Int(required=True)
+    message = fields.Str(required=True)
+    response = fields.Str()
+    created_at = fields.DateTime(dump_only=True)
 
-# Audio schemas
-class AudioGenerate(BaseModel):
-    voice_type: Optional[str] = "alloy"
+# Progress Schemas
+class StudyProgressSchema(Schema):
+    id = fields.Int(dump_only=True)
+    user_id = fields.Int()
+    file_id = fields.Int()
+    completion = fields.Float()
+    listening_time = fields.Float()
+    quiz_avg = fields.Float()
+    updated_at = fields.DateTime(dump_only=True)
 
+class ListeningTimeSchema(Schema):
+    file_id = fields.Int(required=True)
+    seconds = fields.Float(required=True)
 
-class AudioResponse(BaseModel):
-    id: int
-    user_id: int
-    file_id: int
-    audio_path: Optional[str] = None
-    audio_url: Optional[str] = None
-    duration: Optional[float] = None
-    voice_type: str
-    position_seconds: float
-    created_at: datetime
-    
-    class Config:
-        from_attributes = True
+class CompletionSchema(Schema):
+    file_id = fields.Int(required=True)
+    percentage = fields.Float(required=True, validate=validate.Range(min=0, max=100))
 
+# Initialize schemas
+user_schema = UserSchema()
+users_schema = UserSchema(many=True)
+register_schema = UserRegisterSchema()
+login_schema = UserLoginSchema()
+update_user_schema = UserUpdateSchema()
 
-class AudioPositionUpdate(BaseModel):
-    position_seconds: float
+file_schema = FileSchema()
+files_schema = FileSchema(many=True)
 
+audio_schema = AudioLessonSchema()
+audios_schema = AudioLessonSchema(many=True)
+audio_position_schema = AudioPositionSchema()
 
-# Quiz schemas
-class QuizQuestionSchema(BaseModel):
-    question: str
-    options: List[str]
-    correct_answer: int
-    explanation: Optional[str] = None
+quiz_schema = QuizSchema()
+quizzes_schema = QuizSchema(many=True)
+quiz_submit_schema = QuizSubmitSchema()
+attempt_schema = QuizAttemptSchema()
 
+chat_schema = ChatMessageSchema()
+chats_schema = ChatMessageSchema(many=True)
 
-class QuizGenerate(BaseModel):
-    difficulty: Optional[str] = "medium"
-    num_questions: Optional[int] = 5
-
-
-class QuizQuestionResponse(BaseModel):
-    id: int
-    quiz_id: int
-    question: str
-    options: List[str]
-    correct_answer: int
-    explanation: Optional[str] = None
-    
-    class Config:
-        from_attributes = True
-
-
-class QuizResponse(BaseModel):
-    id: int
-    user_id: int
-    file_id: int
-    title: str
-    difficulty: str
-    created_at: datetime
-    questions: List[QuizQuestionResponse] = []
-    
-    class Config:
-        from_attributes = True
-
-
-class QuizSubmitAnswer(BaseModel):
-    answers: List[int]  # List of selected option indices
-
-
-class QuizAttemptResponse(BaseModel):
-    score: float
-    correct: int
-    total: int
-    completed_at: datetime
-    questions: List[QuizQuestionResponse]
-
-
-# Chat schemas
-class ChatMessage(BaseModel):
-    file_id: int
-    message: str
-
-
-class ChatMessageResponse(BaseModel):
-    id: int
-    user_id: int
-    file_id: int
-    message: str
-    response: str
-    created_at: datetime
-    
-    class Config:
-        from_attributes = True
-
-
-class ChatHistoryResponse(BaseModel):
-    messages: List[ChatMessageResponse]
-
-
-# Progress schemas
-class ProgressListeningUpdate(BaseModel):
-    file_id: int
-    seconds: float
-
-
-class ProgressCompletionUpdate(BaseModel):
-    file_id: int
-    completion: float = Field(..., ge=0, le=100)
-
-
-class WeakTopic(BaseModel):
-    topic: str
-    file_id: int
-    file_name: str
-    quiz_avg: float
-
-
-class ProgressResponse(BaseModel):
-    total_files: int
-    total_audio_lessons: int
-    total_quizzes: int
-    total_quiz_attempts: int
-    avg_quiz_score: float
-    total_listening_time: float  # in seconds
-    study_hours: float
-    weak_topics: List[WeakTopic]
+progress_schema = StudyProgressSchema()
+progresses_schema = StudyProgressSchema(many=True)
+listening_time_schema = ListeningTimeSchema()
+completion_schema = CompletionSchema()

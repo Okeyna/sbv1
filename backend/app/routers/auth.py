@@ -1,131 +1,179 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from datetime import timedelta
-from ..database import get_db
-from ..models import User
-from ..schemas import UserCreate, UserResponse, UserUpdate, Token
-from ..auth import (
-    get_password_hash, 
-    verify_password, 
-    create_access_token,
-    decode_access_token,
-    get_current_user
-)
-from ..config import settings
+from datetime import datetime, timedelta
+from flask import Blueprint, request, jsonify
+from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity, get_jwt
+import bcrypt
+from app.database import db
+from app.models import User
+from app.schemas import register_schema, login_schema, update_user_schema, user_schema
+from app.deps import get_current_user
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 
-
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register(user_data: UserCreate, db: Session = Depends(get_db)):
-    """Register a new user."""
-    # Check if user already exists
-    existing_user = db.query(User).filter(User.email == user_data.email).first()
+@auth_bp.route('/register', methods=['POST'])
+def register():
+    """Register a new user"""
+    data = request.get_json()
+    
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+    
+    # Validate input
+    errors = register_schema.validate(data)
+    if errors:
+        return jsonify({'error': errors}), 400
+    
+    email = data.get('email').lower().strip()
+    password = data.get('password')
+    
+    # Check if user exists
+    existing_user = User.query.filter_by(email=email).first()
     if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
+        return jsonify({'error': 'Email already registered'}), 409
     
-    # Create new user
-    hashed_password = get_password_hash(user_data.password)
-    new_user = User(
-        email=user_data.email,
-        hashed_password=hashed_password
+    # Hash password
+    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    
+    # Create user
+    user = User(
+        email=email,
+        hashed_password=hashed_password,
+        role='user',
+        subscription_type='free'
     )
     
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+    db.session.add(user)
+    db.session.commit()
     
-    return new_user
-
-
-@router.post("/login", response_model=Token)
-def login(
-    db: Session = Depends(get_db),
-    username: str = "",  # OAuth2 uses username field for email
-    password: str = "",
-    grant_type: str = "password"
-):
-    """Login and get access token."""
-    # Find user by email (username field in OAuth2)
-    user = db.query(User).filter(User.email == username).first()
-    
-    if not user or not verify_password(password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    # Create access token
-    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+    # Generate tokens
     access_token = create_access_token(
-        data={"sub": user.id, "email": user.email},
-        expires_delta=access_token_expires
+        identity=user.id,
+        additional_claims={'role': user.role}
     )
+    refresh_token = create_refresh_token(identity=user.id)
     
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "expires_in": settings.access_token_expire_minutes * 60
-    }
+    return jsonify({
+        'message': 'User registered successfully',
+        'user': user_schema.dump(user),
+        'access_token': access_token,
+        'refresh_token': refresh_token
+    }), 201
 
 
-@router.post("/logout")
-def logout(current_user: User = Depends(get_current_user)):
-    """Logout the current user."""
-    # In a stateless JWT system, logout is handled client-side by removing the token
-    # This endpoint exists for future session-based logout functionality
-    return {"message": "Successfully logged out"}
-
-
-@router.post("/refresh", response_model=Token)
-def refresh_token(current_user: User = Depends(get_current_user)):
-    """Refresh access token."""
-    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+@auth_bp.route('/login', methods=['POST'])
+def login():
+    """Login user"""
+    data = request.get_json()
+    
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+    
+    # Validate input
+    errors = login_schema.validate(data)
+    if errors:
+        return jsonify({'error': errors}), 400
+    
+    email = data.get('email').lower().strip()
+    password = data.get('password')
+    
+    # Find user
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({'error': 'Invalid email or password'}), 401
+    
+    # Verify password
+    if not bcrypt.checkpw(password.encode('utf-8'), user.hashed_password.encode('utf-8')):
+        return jsonify({'error': 'Invalid email or password'}), 401
+    
+    # Generate tokens
     access_token = create_access_token(
-        data={"sub": current_user.id, "email": current_user.email},
-        expires_delta=access_token_expires
+        identity=user.id,
+        additional_claims={'role': user.role}
+    )
+    refresh_token = create_refresh_token(identity=user.id)
+    
+    return jsonify({
+        'message': 'Login successful',
+        'user': user_schema.dump(user),
+        'access_token': access_token,
+        'refresh_token': refresh_token
+    })
+
+
+@auth_bp.route('/logout', methods=['POST'])
+@jwt_required()
+def logout():
+    """Logout user (client should remove token)"""
+    # In a real app, you might add the token to a blocklist
+    return jsonify({'message': 'Logged out successfully'})
+
+
+@auth_bp.route('/refresh', methods=['POST'])
+@jwt_required(refresh=True)
+def refresh():
+    """Refresh access token"""
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    access_token = create_access_token(
+        identity=user.id,
+        additional_claims={'role': user.role}
     )
     
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "expires_in": settings.access_token_expire_minutes * 60
-    }
+    return jsonify({'access_token': access_token})
 
 
-@router.get("/me", response_model=UserResponse)
-def get_me(current_user: User = Depends(get_current_user)):
-    """Get current user information."""
-    return current_user
-
-
-@router.patch("/me", response_model=UserResponse)
-def update_me(
-    user_update: UserUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Update current user information."""
-    # Update email if provided
-    if user_update.email is not None and user_update.email != current_user.email:
-        # Check if new email is already taken
-        existing = db.query(User).filter(User.email == user_update.email).first()
-        if existing and existing.id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
-        current_user.email = user_update.email
+@auth_bp.route('/me', methods=['GET'])
+@jwt_required()
+def get_me():
+    """Get current user info"""
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
     
-    # Update password if provided
-    if user_update.password is not None:
-        current_user.hashed_password = get_password_hash(user_update.password)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
     
-    db.commit()
-    db.refresh(current_user)
+    return jsonify({'user': user_schema.dump(user)})
+
+
+@auth_bp.route('/me', methods=['PATCH'])
+@jwt_required()
+def update_me():
+    """Update current user info"""
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
     
-    return current_user
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+    
+    # Validate input
+    errors = update_user_schema.validate(data)
+    if errors:
+        return jsonify({'error': errors}), 400
+    
+    if 'email' in data and data['email']:
+        new_email = data['email'].lower().strip()
+        # Check if email is already taken by another user
+        existing = User.query.filter_by(email=new_email).first()
+        if existing and existing.id != user.id:
+            return jsonify({'error': 'Email already in use'}), 409
+        user.email = new_email
+    
+    if 'password' in data and data['password']:
+        user.hashed_password = bcrypt.hashpw(
+            data['password'].encode('utf-8'), 
+            bcrypt.gensalt()
+        ).decode('utf-8')
+    
+    db.session.commit()
+    
+    return jsonify({
+        'message': 'User updated successfully',
+        'user': user_schema.dump(user)
+    })

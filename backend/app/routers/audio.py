@@ -1,181 +1,127 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-import os
-from ..database import get_db
-from ..models import User, UploadedFile, AudioLesson
-from ..schemas import AudioResponse, AudioPositionUpdate
-from ..auth import get_current_user
-from ..services.tts_service import generate_audio_from_text
+from flask import Blueprint, request, jsonify
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from app.database import db
+from app.models import AudioLesson, UploadedFile
+from app.schemas import audio_schema, audios_schema, audio_position_schema
+from app.services.tts_service import generate_audio
+from app.config import Config
 
-router = APIRouter(prefix="/audio", tags=["Audio"])
+audio_bp = Blueprint('audio', __name__, url_prefix='/api/audio')
 
-AUDIO_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "audio")
-
-
-@router.post("/generate/{file_id}", response_model=AudioResponse)
-def generate_audio(
-    file_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Generate audio lesson from a file."""
-    # Get the file
-    file = db.query(UploadedFile).filter(
-        UploadedFile.id == file_id,
-        UploadedFile.user_id == current_user.id
-    ).first()
+@audio_bp.route('/generate/<int:file_id>', methods=['POST'])
+@jwt_required()
+def generate_audio_route(file_id):
+    """Generate audio lesson from file"""
+    current_user_id = get_jwt_identity()
     
-    if not file:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found"
-        )
+    uploaded_file = UploadedFile.query.filter_by(id=file_id, user_id=current_user_id).first()
+    if not uploaded_file:
+        return jsonify({'error': 'File not found'}), 404
     
-    if not file.text_content:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No text content available for audio generation"
-        )
+    if not uploaded_file.text_content:
+        return jsonify({'error': 'No text content available'}), 400
     
     # Check if audio already exists
-    existing_audio = db.query(AudioLesson).filter(
-        AudioLesson.file_id == file_id,
-        AudioLesson.user_id == current_user.id
-    ).first()
-    
+    existing_audio = AudioLesson.query.filter_by(file_id=file_id, user_id=current_user_id).first()
     if existing_audio:
-        return existing_audio
+        return jsonify({
+            'message': 'Audio already exists',
+            'audio': audio_schema.dump(existing_audio)
+        })
     
-    # Create audio directory if it doesn't exist
-    os.makedirs(AUDIO_DIR, exist_ok=True)
-    
-    # Generate audio filename
-    audio_filename = f"audio_{file_id}.wav"
-    audio_path = os.path.join(AUDIO_DIR, audio_filename)
-    
-    # Generate audio from text
     try:
-        generated_path, duration = generate_audio_from_text(
-            text=file.text_content,
-            output_path=audio_path,
-            voice_type="alloy"
+        # Generate audio
+        audio_path, duration = generate_audio(uploaded_file.text_content, file_id)
+        
+        audio_lesson = AudioLesson(
+            user_id=current_user_id,
+            file_id=file_id,
+            audio_path=audio_path,
+            audio_url=f'/static/audio/{audio_path.split("/")[-1]}',
+            duration=duration,
+            voice_type='default'
         )
+        
+        db.session.add(audio_lesson)
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Audio generated successfully',
+            'audio': audio_schema.dump(audio_lesson)
+        }), 201
+        
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate audio: {str(e)}"
-        )
-    
-    # Create database record
-    audio_lesson = AudioLesson(
-        user_id=current_user.id,
-        file_id=file_id,
-        audio_path=audio_path,
-        audio_url=f"/static/audio/{audio_filename}",
-        duration=duration,
-        voice_type="alloy"
-    )
-    
-    db.add(audio_lesson)
-    db.commit()
-    db.refresh(audio_lesson)
-    
-    return audio_lesson
+        return jsonify({'error': f'Failed to generate audio: {str(e)}'}), 500
 
 
-@router.get("/file/{file_id}", response_model=AudioResponse)
-def get_audio_for_file(
-    file_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get audio lesson for a specific file."""
-    audio = db.query(AudioLesson).filter(
-        AudioLesson.file_id == file_id,
-        AudioLesson.user_id == current_user.id
-    ).first()
+@audio_bp.route('/file/<int:file_id>', methods=['GET'])
+@jwt_required()
+def get_audio_for_file(file_id):
+    """Get audio lesson for a specific file"""
+    current_user_id = get_jwt_identity()
+    audio = AudioLesson.query.filter_by(file_id=file_id, user_id=current_user_id).first()
     
     if not audio:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Audio lesson not found. Generate it first."
-        )
+        return jsonify({'error': 'Audio not found'}), 404
     
-    return audio
+    return jsonify({'audio': audio_schema.dump(audio)})
 
 
-@router.get("/{audio_id}", response_model=AudioResponse)
-def get_audio(
-    audio_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get a specific audio lesson by ID."""
-    audio = db.query(AudioLesson).filter(
-        AudioLesson.id == audio_id,
-        AudioLesson.user_id == current_user.id
-    ).first()
+@audio_bp.route('/<int:audio_id>', methods=['GET'])
+@jwt_required()
+def get_audio(audio_id):
+    """Get specific audio lesson"""
+    current_user_id = get_jwt_identity()
+    audio = AudioLesson.query.filter_by(id=audio_id, user_id=current_user_id).first()
     
     if not audio:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Audio lesson not found"
-        )
+        return jsonify({'error': 'Audio not found'}), 404
     
-    return audio
+    return jsonify({'audio': audio_schema.dump(audio)})
 
 
-@router.delete("/{audio_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_audio(
-    audio_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Delete an audio lesson."""
-    audio = db.query(AudioLesson).filter(
-        AudioLesson.id == audio_id,
-        AudioLesson.user_id == current_user.id
-    ).first()
+@audio_bp.route('/<int:audio_id>', methods=['DELETE'])
+@jwt_required()
+def delete_audio(audio_id):
+    """Delete audio lesson"""
+    current_user_id = get_jwt_identity()
+    audio = AudioLesson.query.filter_by(id=audio_id, user_id=current_user_id).first()
     
     if not audio:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Audio lesson not found"
-        )
+        return jsonify({'error': 'Audio not found'}), 404
     
     # Delete physical file
-    if audio.audio_path and os.path.exists(audio.audio_path):
-        os.remove(audio.audio_path)
+    try:
+        import os
+        if os.path.exists(audio.audio_path):
+            os.remove(audio.audio_path)
+    except Exception:
+        pass
     
-    # Delete from database
-    db.delete(audio)
-    db.commit()
+    db.session.delete(audio)
+    db.session.commit()
     
-    return None
+    return jsonify({'message': 'Audio deleted successfully'})
 
 
-@router.post("/{audio_id}/position", response_model=AudioResponse)
-def update_audio_position(
-    audio_id: int,
-    position_data: AudioPositionUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Save playback position for an audio lesson."""
-    audio = db.query(AudioLesson).filter(
-        AudioLesson.id == audio_id,
-        AudioLesson.user_id == current_user.id
-    ).first()
+@audio_bp.route('/<int:audio_id>/position', methods=['POST'])
+@jwt_required()
+def update_position(audio_id):
+    """Update playback position"""
+    current_user_id = get_jwt_identity()
+    data = request.get_json()
     
+    if not data or 'position_seconds' not in data:
+        return jsonify({'error': 'Position required'}), 400
+    
+    audio = AudioLesson.query.filter_by(id=audio_id, user_id=current_user_id).first()
     if not audio:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Audio lesson not found"
-        )
+        return jsonify({'error': 'Audio not found'}), 404
     
-    # Update position
-    audio.position_seconds = position_data.position_seconds
-    db.commit()
-    db.refresh(audio)
+    audio.position_seconds = float(data['position_seconds'])
+    db.session.commit()
     
-    return audio
+    return jsonify({
+        'message': 'Position updated',
+        'position_seconds': audio.position_seconds
+    })

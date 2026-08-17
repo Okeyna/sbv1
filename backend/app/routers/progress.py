@@ -1,201 +1,192 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from sqlalchemy import func
-from typing import List
-import json
-from ..database import get_db
-from ..models import (
-    User, UploadedFile, AudioLesson, Quiz, 
-    QuizAttempt, StudyProgress, QuizQuestion
-)
-from ..schemas import (
-    ProgressResponse, 
-    ProgressListeningUpdate, 
-    ProgressCompletionUpdate,
-    WeakTopic
-)
-from ..auth import get_current_user
+from flask import Blueprint, request, jsonify
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from app.database import db
+from app.models import StudyProgress, UploadedFile, AudioLesson, Quiz, QuizAttempt, QuizQuestion
+from app.schemas import progress_schema, progresses_schema
 
-router = APIRouter(prefix="/progress", tags=["Progress"])
+progress_bp = Blueprint('progress', __name__, url_prefix='/api/progress')
 
-
-@router.get("", response_model=ProgressResponse)
-def get_progress(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get overall study progress."""
-    # Total files
-    total_files = db.query(UploadedFile).filter(
-        UploadedFile.user_id == current_user.id
-    ).count()
+@progress_bp.route('', methods=['GET'])
+@jwt_required()
+def get_progress():
+    """Get overall study progress for current user"""
+    current_user_id = get_jwt_identity()
     
-    # Total audio lessons
-    total_audio = db.query(AudioLesson).filter(
-        AudioLesson.user_id == current_user.id
-    ).count()
+    # Get all files
+    total_files = UploadedFile.query.filter_by(user_id=current_user_id).count()
     
-    # Total quizzes
-    total_quizzes = db.query(Quiz).filter(
-        Quiz.user_id == current_user.id
-    ).count()
+    # Get all audio lessons
+    total_audio = AudioLesson.query.filter_by(user_id=current_user_id).count()
     
-    # Total quiz attempts
-    total_attempts = db.query(QuizAttempt).filter(
-        QuizAttempt.user_id == current_user.id
-    ).count()
+    # Get all quizzes
+    total_quizzes = Quiz.query.filter_by(user_id=current_user_id).count()
     
-    # Average quiz score
-    avg_score_result = db.query(func.avg(QuizAttempt.score)).filter(
-        QuizAttempt.user_id == current_user.id
-    ).scalar()
-    avg_quiz_score = float(avg_score_result) if avg_score_result else 0.0
+    # Get quiz attempts
+    quiz_attempts = QuizAttempt.query.filter_by(user_id=current_user_id).all()
+    total_attempts = len(quiz_attempts)
     
-    # Total listening time from progress table
-    total_listening_result = db.query(func.sum(StudyProgress.listening_time)).filter(
-        StudyProgress.user_id == current_user.id
-    ).scalar()
-    total_listening_time = float(total_listening_result) if total_listening_result else 0.0
+    # Calculate average quiz score
+    avg_score = 0.0
+    if quiz_attempts:
+        avg_score = sum(a.score for a in quiz_attempts) / len(quiz_attempts)
     
-    # Calculate study hours (listening time in hours)
-    study_hours = total_listening_time / 3600
+    # Get total listening time
+    all_progress = StudyProgress.query.filter_by(user_id=current_user_id).all()
+    total_listening_time = sum(p.listening_time for p in all_progress) if all_progress else 0.0
+    
+    # Convert to hours
+    study_hours = total_listening_time / 3600.0
     
     # Get weak topics
-    weak_topics = _get_weak_topics(db, current_user.id)
+    weak_topics = get_weak_topics(current_user_id)
     
-    return ProgressResponse(
-        total_files=total_files,
-        total_audio_lessons=total_audio,
-        total_quizzes=total_quizzes,
-        total_quiz_attempts=total_attempts,
-        avg_quiz_score=avg_quiz_score,
-        total_listening_time=total_listening_time,
-        study_hours=study_hours,
-        weak_topics=weak_topics
-    )
+    return jsonify({
+        'total_files': total_files,
+        'total_audio_lessons': total_audio,
+        'total_quizzes': total_quizzes,
+        'total_quiz_attempts': total_attempts,
+        'average_quiz_score': round(avg_score, 2),
+        'total_listening_time_seconds': round(total_listening_time, 2),
+        'study_hours': round(study_hours, 2),
+        'weak_topics': weak_topics
+    })
 
 
-@router.post("/listening")
-def update_listening_time(
-    progress_data: ProgressListeningUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Update listening time for a file."""
+@progress_bp.route('/listening', methods=['POST'])
+@jwt_required()
+def update_listening_time():
+    """Update listening time for a file"""
+    current_user_id = get_jwt_identity()
+    data = request.get_json()
+    
+    if not data or 'file_id' not in data or 'seconds' not in data:
+        return jsonify({'error': 'file_id and seconds required'}), 400
+    
+    file_id = data['file_id']
+    seconds = float(data['seconds'])
+    
+    # Verify file belongs to user
+    uploaded_file = UploadedFile.query.filter_by(id=file_id, user_id=current_user_id).first()
+    if not uploaded_file:
+        return jsonify({'error': 'File not found'}), 404
+    
     # Get or create progress record
-    progress = db.query(StudyProgress).filter(
-        StudyProgress.user_id == current_user.id,
-        StudyProgress.file_id == progress_data.file_id
-    ).first()
+    progress = StudyProgress.query.filter_by(user_id=current_user_id, file_id=file_id).first()
     
     if not progress:
         progress = StudyProgress(
-            user_id=current_user.id,
-            file_id=progress_data.file_id,
-            listening_time=0.0
+            user_id=current_user_id,
+            file_id=file_id,
+            completion=0.0,
+            listening_time=seconds,
+            quiz_avg=0.0
         )
-        db.add(progress)
+        db.session.add(progress)
+    else:
+        progress.listening_time += seconds
     
-    # Add listening time
-    progress.listening_time += progress_data.seconds
-    db.commit()
-    db.refresh(progress)
+    db.session.commit()
     
-    return {"message": "Listening time updated", "total_seconds": progress.listening_time}
+    return jsonify({
+        'message': 'Listening time updated',
+        'total_listening_time': progress.listening_time
+    })
 
 
-@router.post("/completion")
-def update_completion(
-    progress_data: ProgressCompletionUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Update completion percentage for a file."""
+@progress_bp.route('/completion', methods=['POST'])
+@jwt_required()
+def update_completion():
+    """Update completion percentage for a file"""
+    current_user_id = get_jwt_identity()
+    data = request.get_json()
+    
+    if not data or 'file_id' not in data or 'percentage' not in data:
+        return jsonify({'error': 'file_id and percentage required'}), 400
+    
+    file_id = data['file_id']
+    percentage = float(data['percentage'])
+    
+    if percentage < 0 or percentage > 100:
+        return jsonify({'error': 'Percentage must be between 0 and 100'}), 400
+    
+    # Verify file belongs to user
+    uploaded_file = UploadedFile.query.filter_by(id=file_id, user_id=current_user_id).first()
+    if not uploaded_file:
+        return jsonify({'error': 'File not found'}), 404
+    
     # Get or create progress record
-    progress = db.query(StudyProgress).filter(
-        StudyProgress.user_id == current_user.id,
-        StudyProgress.file_id == progress_data.file_id
-    ).first()
+    progress = StudyProgress.query.filter_by(user_id=current_user_id, file_id=file_id).first()
     
     if not progress:
         progress = StudyProgress(
-            user_id=current_user.id,
-            file_id=progress_data.file_id,
-            completion=0.0
+            user_id=current_user_id,
+            file_id=file_id,
+            completion=percentage,
+            listening_time=0.0,
+            quiz_avg=0.0
         )
-        db.add(progress)
+        db.session.add(progress)
+    else:
+        progress.completion = percentage
     
-    # Update completion
-    progress.completion = progress_data.completion
-    db.commit()
-    db.refresh(progress)
+    db.session.commit()
     
-    return {"message": "Completion updated", "completion": progress.completion}
+    return jsonify({
+        'message': 'Completion updated',
+        'completion': progress.completion
+    })
 
 
-@router.get("/weak-topics", response_model=List[WeakTopic])
-def get_weak_topics(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get weak topics based on quiz performance."""
-    weak_topics = _get_weak_topics(db, current_user.id)
-    return weak_topics
+@progress_bp.route('/weak-topics', methods=['GET'])
+@jwt_required()
+def get_weak_topics_route():
+    """Get weak topics based on quiz performance"""
+    current_user_id = get_jwt_identity()
+    weak_topics = get_weak_topics(current_user_id)
+    return jsonify({'weak_topics': weak_topics})
 
 
-def _get_weak_topics(db: Session, user_id: int) -> List[WeakTopic]:
-    """Helper function to identify weak topics based on quiz performance."""
+def get_weak_topics(user_id):
+    """Helper function to identify weak topics from quiz performance"""
     weak_topics = []
     
-    # Get files with quiz attempts where average score is below 70%
-    results = db.query(
-        UploadedFile.id,
-        UploadedFile.filename,
-        func.avg(QuizAttempt.score).label('avg_score')
-    ).join(
-        Quiz, UploadedFile.id == Quiz.file_id
-    ).join(
-        QuizAttempt, Quiz.id == QuizAttempt.quiz_id
-    ).filter(
-        UploadedFile.user_id == user_id
-    ).group_by(
-        UploadedFile.id,
-        UploadedFile.filename
-    ).having(
-        func.avg(QuizAttempt.score) < 70
+    # Get all incorrect answers
+    failed_attempts = QuizAttempt.query.join(Quiz).filter(
+        Quiz.user_id == user_id,
+        QuizAttempt.score < 80  # Consider scores below 80% as weak areas
     ).all()
     
-    for result in results:
-        weak_topics.append(WeakTopic(
-            topic=f"Content from {result.filename}",
-            file_id=result.id,
-            file_name=result.filename,
-            quiz_avg=float(result.avg_score)
-        ))
+    if not failed_attempts:
+        return weak_topics
     
-    # Also check for questions that are frequently answered incorrectly
-    incorrect_questions = db.query(
-        QuizQuestion.id,
-        QuizQuestion.question,
-        QuizQuestion.explanation,
-        UploadedFile.id.label('file_id'),
-        UploadedFile.filename.label('file_name')
-    ).join(
-        Quiz, QuizQuestion.quiz_id == Quiz.id
-    ).join(
-        UploadedFile, Quiz.file_id == UploadedFile.id
-    ).filter(
-        UploadedFile.user_id == user_id
-    ).limit(5).all()
+    # Analyze which questions were answered incorrectly
+    incorrect_questions = []
+    for attempt in failed_attempts:
+        questions = QuizQuestion.query.filter_by(quiz_id=attempt.quiz_id).all()
+        for i, q in enumerate(questions):
+            if i < len(attempt.answers) and attempt.answers[i] != q.correct_answer:
+                incorrect_questions.append({
+                    'question': q.question[:100],  # Truncate for display
+                    'topic': extract_topic(q.question),
+                    'explanation': q.explanation
+                })
     
-    # If we don't have enough weak topics from low scores, add some from incorrect answers
-    if len(weak_topics) < 3 and incorrect_questions:
-        for q in incorrect_questions[:3 - len(weak_topics)]:
-            weak_topics.append(WeakTopic(
-                topic=q.question[:50] + "..." if len(q.question) > 50 else q.question,
-                file_id=q.file_id,
-                file_name=q.file_name,
-                quiz_avg=0.0
-            ))
+    # Group by topic and return unique topics
+    seen_topics = set()
+    for q in incorrect_questions[:5]:  # Limit to 5 weak topics
+        topic = q['topic']
+        if topic and topic not in seen_topics:
+            seen_topics.add(topic)
+            weak_topics.append({
+                'topic': topic,
+                'recommendation': f"Review: {q['explanation'][:150]}" if q.get('explanation') else "Review the related material"
+            })
     
     return weak_topics
+
+
+def extract_topic(question_text):
+    """Extract a simple topic from question text"""
+    # Simple heuristic: first few words or key terms
+    words = question_text.split()[:5]
+    return ' '.join(words) + '...' if len(words) >= 3 else question_text[:50]
