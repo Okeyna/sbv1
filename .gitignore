@@ -48,3 +48,4 @@ target/
 .gradle/
 node_modules/
 ```.next/
+.next/
