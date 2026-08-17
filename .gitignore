@@ -91,3 +91,4 @@ public/build/
 *.tar.xz
 *.tar.zst
 ```.next/
+.next/
