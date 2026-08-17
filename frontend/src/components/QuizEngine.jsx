@@ -14,11 +14,21 @@ const QuizEngine = ({ quiz, fileId }) => {
   const handleSubmit = async () => {
     setLoading(true);
     try {
-      const quizResult = await api.submitQuiz(quiz.id, answers);
+      const orderedAnswers = quiz.questions.map((question) => {
+        const answer = answers[question.id];
+        return answer === undefined || answer === null ? -1 : Number(answer);
+      });
+
+      if (orderedAnswers.some((answer) => answer < 0)) {
+        throw new Error('Please answer all questions before submitting.');
+      }
+
+      const quizResult = await api.submitQuiz(quiz.id, orderedAnswers);
       setResult(quizResult);
       setSubmitted(true);
     } catch (err) {
       console.error('Failed to submit quiz:', err);
+      setResult({ error: err.message || 'Quiz submission failed.' });
     } finally {
       setLoading(false);
     }

@@ -47,12 +47,16 @@ class TokenResponse(BaseModel):
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
+    if 'sub' in to_encode and not isinstance(to_encode['sub'], str):
+        to_encode['sub'] = str(to_encode['sub'])
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, Config.JWT_SECRET_KEY, algorithm=Config.JWT_ALGORITHM)
 
 def create_refresh_token(data: dict):
     to_encode = data.copy()
+    if 'sub' in to_encode and not isinstance(to_encode['sub'], str):
+        to_encode['sub'] = str(to_encode['sub'])
     expire = datetime.utcnow() + timedelta(days=7)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, Config.JWT_SECRET_KEY, algorithm=Config.JWT_ALGORITHM)
@@ -65,10 +69,11 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     )
     try:
         payload = jwt.decode(token, Config.JWT_SECRET_KEY, algorithms=[Config.JWT_ALGORITHM])
-        user_id: int = payload.get("sub")
+        user_id = payload.get("sub")
         if user_id is None:
             raise credentials_exception
-    except JWTError:
+        user_id = int(user_id)
+    except (JWTError, TypeError, ValueError):
         raise credentials_exception
     
     user = db.query(User).filter(User.id == user_id).first()

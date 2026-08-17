@@ -42,12 +42,12 @@ def generate_lesson(
     # Generate audio
     try:
         audio_path, duration = generate_audio(uploaded_file.text_content, file_id)
-        
+
         audio_lesson = AudioLesson(
             user_id=current_user.id,
             file_id=file_id,
             audio_path=audio_path,
-            audio_url=f"/static/audio/{os.path.basename(audio_path)}",
+            audio_url=f"{Config.BACKEND_BASE_URL}/static/audio/{os.path.basename(audio_path)}",
             duration=duration,
             voice_type="alloy"
         )

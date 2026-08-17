@@ -33,7 +33,9 @@ const ProgressCards = ({ progress }) => {
           <h4>⚠️ Weak Topics</h4>
           <ul>
             {progress.weak_topics.map((topic, index) => (
-              <li key={index}>{topic}</li>
+              <li key={index}>
+                {topic.filename || `File ${topic.file_id}`} ({Math.round(topic.avg_score)}%)
+              </li>
             ))}
           </ul>
         </div>

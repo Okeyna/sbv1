@@ -7,6 +7,11 @@ const AudioPlayer = ({ audio }) => {
   const [duration, setDuration] = useState(audio?.duration || 0);
   const [playbackRate, setPlaybackRate] = useState(1);
   const audioRef = useRef(null);
+  const audioSource = audio?.audio_url
+    ? audio.audio_url.startsWith('http')
+      ? audio.audio_url
+      : `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}${audio.audio_url}`
+    : '';
 
   useEffect(() => {
     if (audio?.position_seconds) {
@@ -74,7 +79,7 @@ const AudioPlayer = ({ audio }) => {
       <h3>Audio Lesson</h3>
       <audio
         ref={audioRef}
-        src={audio.audio_url}
+        src={audioSource}
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={handleEnded}

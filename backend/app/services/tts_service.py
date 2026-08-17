@@ -49,45 +49,36 @@ def estimate_duration(text: str) -> float:
 def generate_audio(text: str, file_id: int) -> Tuple[str, float]:
     """Generate audio from text using TTS"""
     from app.config import Config
-    
+
     client = get_openai_client()
-    filename = f"audio_{file_id}.mp3"
+    filename = f"audio_{file_id}.wav"
     output_path = os.path.join(Config.AUDIO_FOLDER, filename)
-    
+
     # Ensure directory exists
     os.makedirs(Config.AUDIO_FOLDER, exist_ok=True)
-    
+
     if not client:
-        # Generate silent placeholder
         duration = estimate_duration(text)
-        # Create a simple silent WAV file
-        generate_silent_audio(output_path.replace('.mp3', '.wav'), min(duration, 60.0))
-        # For mock, just create an empty file with .mp3 extension
-        with open(output_path, 'wb') as f:
-            # Write minimal WAV header to make it a valid (silent) audio file
-            pass
+        generate_silent_audio(output_path, min(duration, 60.0))
         return output_path, duration
-    
+
     try:
         # Use OpenAI TTS
         from openai import OpenAI
-        
+
         response = client.audio.speech.create(
             model="tts-1",
             voice="alloy",
             input=text[:4096]  # Truncate if too long
         )
-        
+
         response.stream_to_file(output_path)
-        
+
         # Estimate duration
         duration = estimate_duration(text)
-        
+
         return output_path, duration
-    except Exception as e:
-        # Fallback to silent audio
+    except Exception:
         duration = estimate_duration(text)
-        generate_silent_audio(output_path.replace('.mp3', '.wav'), min(duration, 60.0))
-        with open(output_path, 'wb') as f:
-            pass
+        generate_silent_audio(output_path, min(duration, 60.0))
         return output_path, duration

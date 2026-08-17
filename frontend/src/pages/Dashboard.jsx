@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useAuth } from '../AuthContext';
+import { useAuth } from '../useAuth';
 import * as api from '../api';
 import Navbar from '../components/Navbar';
 import FileUploader from '../components/FileUploader';
@@ -27,12 +27,14 @@ const Dashboard = () => {
         api.getFiles(),
         api.getProgress()
       ]);
-      setFiles(filesData);
+      const normalizedFiles = Array.isArray(filesData) ? filesData : filesData?.files ?? [];
+      setFiles(normalizedFiles);
       setProgress(progressData);
-      if (filesData.length > 0 && !selectedFile) {
-        setSelectedFile(filesData[0]);
+      if (normalizedFiles.length > 0 && !selectedFile) {
+        setSelectedFile(normalizedFiles[0]);
       }
     } catch (err) {
+      console.error('Failed to load dashboard data:', err);
       setError('Failed to load dashboard data.');
     } finally {
       setLoading(false);

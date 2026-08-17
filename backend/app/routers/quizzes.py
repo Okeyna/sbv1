@@ -49,7 +49,7 @@ def generate_quiz_endpoint(
             question = QuizQuestion(
                 quiz_id=quiz.id,
                 question=q_data["question"],
-                options=json.dumps(q_data["options"]),
+                options=q_data["options"],
                 correct_answer=q_data["correct_answer"],
                 explanation=q_data["explanation"]
             )
@@ -130,7 +130,7 @@ def submit_quiz(
         score=score,
         correct=correct,
         total=total,
-        answers=json.dumps(submission.answers)
+        answers=submission.answers
     )
     
     db.add(attempt)

@@ -36,10 +36,16 @@ export const authAPI = {
   register: (email, password) => 
     api.post('/auth/register', { email, password }),
   
-  login: (email, password) => 
-    api.post('/auth/login', null, {
-      params: { username: email, password, grant_type: 'password' }
-    }),
+  login: (email, password) => {
+    const form = new URLSearchParams();
+    form.append('username', email);
+    form.append('password', password);
+    form.append('grant_type', 'password');
+
+    return api.post('/auth/login', form, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    });
+  },
   
   logout: () => api.post('/auth/logout'),
   
@@ -114,17 +120,55 @@ export const progressAPI = {
   getWeakTopics: () => api.get('/progress/weak-topics'),
 };
 
-export const uploadFile = (file) => filesAPI.upload(file);
-export const getFiles = () => filesAPI.getAll();
-export const getFile = (id) => filesAPI.getById(id);
-export const deleteFile = (id) => filesAPI.delete(id);
-export const generateSummary = (id) => filesAPI.regenerateSummary(id);
-export const generateAudio = (fileId) => audioAPI.generate(fileId);
-export const updateAudioPosition = (id, position) => audioAPI.updatePosition(id, position);
-export const generateQuiz = (fileId, difficulty = 'medium') => quizzesAPI.generate(fileId, difficulty);
-export const submitQuiz = (id, answers) => quizzesAPI.submit(id, answers);
-export const getChatHistory = (fileId) => chatAPI.getHistory(fileId);
-export const sendMessage = (fileId, message) => chatAPI.sendMessage(fileId, message);
-export const getProgress = () => progressAPI.getProgress();
+export const uploadFile = async (file) => {
+  const response = await filesAPI.upload(file);
+  return response.data;
+};
+export const getFiles = async () => {
+  const response = await filesAPI.getAll();
+  return response.data.files ?? response.data;
+};
+export const getFile = async (id) => {
+  const response = await filesAPI.getById(id);
+  return response.data;
+};
+export const deleteFile = async (id) => {
+  const response = await filesAPI.delete(id);
+  return response.data;
+};
+export const generateSummary = async (id) => {
+  const response = await filesAPI.regenerateSummary(id);
+  return response.data.summary ?? response.data;
+};
+export const generateAudio = async (fileId) => {
+  const response = await audioAPI.generate(fileId);
+  return response.data;
+};
+export const updateAudioPosition = async (id, position) => {
+  const response = await audioAPI.updatePosition(id, position);
+  return response.data;
+};
+export const generateQuiz = async (fileId, difficulty = 'medium') => {
+  const response = await quizzesAPI.generate(fileId, difficulty);
+  return response.data;
+};
+export const submitQuiz = async (id, answers) => {
+  const response = await quizzesAPI.submit(id, answers);
+  return response.data;
+};
+export const getChatHistory = async (fileId) => {
+  const response = await chatAPI.getHistory(fileId);
+  return response.data.messages ?? response.data;
+};
+export const sendMessage = async (fileId, message) => {
+  const response = await chatAPI.sendMessage(fileId, message);
+  const payload = response.data ?? response;
+  if (typeof payload === 'string') return payload;
+  return payload.response ?? payload.message ?? payload;
+};
+export const getProgress = async () => {
+  const response = await progressAPI.getProgress();
+  return response.data;
+};
 
 export default api;

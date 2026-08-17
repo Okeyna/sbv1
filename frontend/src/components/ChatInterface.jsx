@@ -38,7 +38,11 @@ const ChatInterface = ({ fileId }) => {
 
     try {
       const response = await api.sendMessage(fileId, input);
-      setMessages(prev => [...prev, { role: 'assistant', content: response.response }]);
+      const assistantMessage = typeof response === 'string'
+        ? response
+        : response?.response || response?.message || 'No response received.';
+
+      setMessages(prev => [...prev, { role: 'assistant', content: assistantMessage }]);
     } catch (err) {
       console.error('Failed to send message:', err);
       setMessages(prev => [...prev, { role: 'error', content: 'Failed to get response. Please try again.' }]);
