@@ -64,3 +64,4 @@ backend/audio/*
 .pytest_cache/
 .coverage
 htmlcov/
+.next/
