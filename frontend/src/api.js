@@ -114,4 +114,17 @@ export const progressAPI = {
   getWeakTopics: () => api.get('/progress/weak-topics'),
 };
 
+export const uploadFile = (file) => filesAPI.upload(file);
+export const getFiles = () => filesAPI.getAll();
+export const getFile = (id) => filesAPI.getById(id);
+export const deleteFile = (id) => filesAPI.delete(id);
+export const generateSummary = (id) => filesAPI.regenerateSummary(id);
+export const generateAudio = (fileId) => audioAPI.generate(fileId);
+export const updateAudioPosition = (id, position) => audioAPI.updatePosition(id, position);
+export const generateQuiz = (fileId, difficulty = 'medium') => quizzesAPI.generate(fileId, difficulty);
+export const submitQuiz = (id, answers) => quizzesAPI.submit(id, answers);
+export const getChatHistory = (fileId) => chatAPI.getHistory(fileId);
+export const sendMessage = (fileId, message) => chatAPI.sendMessage(fileId, message);
+export const getProgress = () => progressAPI.getProgress();
+
 export default api;
